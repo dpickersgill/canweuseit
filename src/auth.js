@@ -11,6 +11,18 @@ const hash = (t) => crypto.createHash('sha256').update(t).digest('hex');
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_LINKS_PER_HOUR = 5;
 
+// Creates a one-time link for a registered email and sends it. Returns false if rate-limited.
+export async function issueLoginLink(email, { subject, intro }) {
+  const { rows: [{ n }] } = await query(
+    "select count(*)::int n from login_token where lower(email) = $1 and created_at > now() - interval '1 hour'", [email]);
+  if (n >= MAX_LINKS_PER_HOUR) return false;
+  const token = crypto.randomBytes(32).toString('base64url');
+  await query("insert into login_token (email, token_hash, expires_at) values ($1, $2, now() + interval '15 minutes')", [email, hash(token)]);
+  const link = `${config.appUrl}/auth/verify?token=${token}`;
+  await sendMail({ to: email, subject, text: `${intro}\n\n${link}\n\nIf you didn't expect this, ignore this email.` });
+  return true;
+}
+
 // 1. Ask for a sign-in link. The answer is always the same, so nobody can probe which emails are registered.
 authRouter.post('/request-link', async (req, res, next) => {
   try {
@@ -21,17 +33,9 @@ authRouter.post('/request-link', async (req, res, next) => {
     const { rows: users } = await query('select id from app_user where lower(email) = $1', [email]);
     if (!users.length) return res.json(reply);
 
-    const { rows: [{ n }] } = await query(
-      "select count(*)::int n from login_token where lower(email) = $1 and created_at > now() - interval '1 hour'", [email]);
-    if (n >= MAX_LINKS_PER_HOUR) return res.json(reply);
-
-    const token = crypto.randomBytes(32).toString('base64url');
-    await query("insert into login_token (email, token_hash, expires_at) values ($1, $2, now() + interval '15 minutes')", [email, hash(token)]);
-    const link = `${config.appUrl}/auth/verify?token=${token}`;
-    await sendMail({
-      to: email,
+    await issueLoginLink(email, {
       subject: 'Your CanWeUseIt sign-in link',
-      text: `Click to sign in (valid for 15 minutes, works once):\n\n${link}\n\nIf you didn't ask for this, ignore this email.`,
+      intro: 'Click to sign in (valid for 15 minutes, works once):',
     });
     res.json(reply);
   } catch (err) { next(err); }

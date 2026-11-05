@@ -3,6 +3,7 @@ import { authRouter } from './auth.js';
 import { query, withTenant } from './db.js';
 import { requireUser, requireTenant } from './tenant.js';
 import { setupRouter } from './setup.js';
+import { peopleRouter } from './people.js';
 
 export function buildApp() {
   const app = express();
@@ -36,6 +37,7 @@ export function buildApp() {
   });
 
   app.use(setupRouter);
+  app.use(peopleRouter);
 
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
     console.error(err);

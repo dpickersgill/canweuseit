@@ -149,3 +149,50 @@ test('a space cannot be attached to another tenant\'s facility or parent', async
   const fA = (await owner.query("insert into facility (tenant_id, name) values ($1, $2) returning id", [A, `A-${rnd()}`])).rows[0].id;
   assert.equal((await send('POST', '/spaces', userA.id, { facilityId: fA, parentId: sB, name: 'Sneaky2' })).status, 400);
 });
+
+test('organizations and people: roles are enforced', async () => {
+  const org1 = await (await send('POST', '/organizations', userA.id, { name: `Club ${rnd()}`, kind: 'club' })).json();
+  const org2 = await (await send('POST', '/organizations', userA.id, { name: `School ${rnd()}`, kind: 'school' })).json();
+  assert.ok(org1.id && org2.id);
+  assert.equal((await send('POST', '/organizations', userViewer, { name: 'Nope' })).status, 403);
+  assert.equal((await send('POST', '/organizations', userA.id, { name: org1.name })).status, 409);
+
+  // admin adds an org admin; they get a sign-in email
+  const adminEmail = `oa-${rnd()}@example.com`;
+  const n = mails.length;
+  let r = await send('POST', `/organizations/${org1.id}/members`, userA.id, { email: adminEmail, fullName: 'Org Admin', role: 'org_admin' });
+  assert.equal(r.status, 201);
+  assert.equal(mails.length, n + 1);
+  assert.match(mails.at(-1), /added you to CanWeUseIt/);
+  assert.equal((await send('POST', `/organizations/${org1.id}/members`, userA.id, { email: adminEmail, fullName: 'Org Admin', role: 'org_admin' })).status, 409);
+
+  // that org admin can add bookers to their own org only
+  const oaId = (await owner.query('select id from app_user where lower(email)=$1', [adminEmail])).rows[0].id;
+  r = await send('POST', `/organizations/${org1.id}/members`, oaId, { email: `bk-${rnd()}@example.com`, fullName: 'Booker', role: 'booker' });
+  assert.equal(r.status, 201);
+  r = await send('POST', `/organizations/${org2.id}/members`, oaId, { email: `bk-${rnd()}@example.com`, fullName: 'Booker', role: 'booker' });
+  assert.equal(r.status, 403);
+  r = await send('POST', `/organizations/${org1.id}/members`, oaId, { email: `x-${rnd()}@example.com`, fullName: 'X', role: 'org_admin' });
+  assert.equal(r.status, 403);
+  assert.equal((await send('POST', '/staff', oaId, { email: `s-${rnd()}@example.com`, fullName: 'S', role: 'tenant_admin' })).status, 403);
+
+  // org admin sees only their own org; staff see all
+  const theirs = await (await send('GET', '/organizations', oaId)).json();
+  assert.deepEqual(theirs.organizations.map((o) => o.id), [org1.id]);
+  assert.ok((await (await send('GET', '/organizations', userA.id)).json()).organizations.length >= 2);
+  const members = await (await send('GET', `/organizations/${org1.id}/members`, oaId)).json();
+  assert.equal(members.members.length, 2);
+  assert.equal((await send('GET', `/organizations/${org2.id}/members`, oaId)).status, 403);
+});
+
+test('staff and priority', async () => {
+  const email = `ap-${rnd()}@example.com`;
+  assert.equal((await send('POST', '/staff', userA.id, { email, fullName: 'Approver', role: 'approver' })).status, 201);
+  assert.equal((await send('POST', '/staff', userA.id, { email, fullName: 'Approver', role: 'booker' })).status, 400);
+  assert.equal((await send('PUT', '/priority', userA.id, { email, level: 4 })).status, 200);
+  assert.equal((await send('PUT', '/priority', userA.id, { email, level: 9 })).status, 400);
+  assert.equal((await send('PUT', '/priority', userA.id, { email: userNobody && 'nobody@nowhere.test', level: 2 })).status, 404);
+  assert.equal((await send('PUT', '/priority', userViewer, { email, level: 2 })).status, 403);
+  const { rows } = await owner.query("select level from user_priority where tenant_id=$1", [A]);
+  assert.equal(rows[0].level, 4);
+});
