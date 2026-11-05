@@ -10,6 +10,7 @@ export function buildApp() {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '100kb' }));
+  app.use(express.static(new URL('../public', import.meta.url).pathname, { maxAge: '5m' }));
   app.use(express.urlencoded({ extended: false, limit: '10kb' }));
 
   app.get('/health', async (req, res) => {

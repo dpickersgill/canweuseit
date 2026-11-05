@@ -27,6 +27,29 @@ function datesFromBody(body, tz) {
   return { error: 'Provide dates [{startsAt, endsAt}] or weekly {startsOn, until, weekdays[0-6], startTime, endTime}' };
 }
 
+// Confirmed bookings for a stretch of days starting at a local date (everyone in the tenant can see these).
+requestsRouter.get('/bookings', async (req, res, next) => {
+  try {
+    const start = String(req.query.start || '');
+    const days = Math.min(Math.max(parseInt(req.query.days || '7', 10) || 7, 1), 62);
+    if (!isDate(start)) return res.status(400).json({ error: 'start must be a date like 2027-03-01' });
+    const rows = await withTenant(req.tenantId, async (c) => {
+      const { rows: [t] } = await c.query('select timezone from tenant where id = $1', [req.tenantId]);
+      const from = localToUtc(start, '00:00', t.timezone);
+      const endDay = new Date(Date.parse(`${start}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
+      const to = localToUtc(endDay, '00:00', t.timezone);
+      return (await c.query(
+        `select bd.id, bd.starts_at as "startsAt", bd.ends_at as "endsAt", bd.space_id as "spaceId", s.name as space,
+                o.id as "organizationId", o.name as organization, r.title
+           from booking_date bd join request r on r.id = bd.request_id join space s on s.id = bd.space_id
+           join organization o on o.id = r.organization_id
+          where bd.status = 'confirmed' and bd.starts_at < $2 and bd.ends_at > $1
+          order by bd.starts_at, s.name`, [from, to])).rows;
+    });
+    res.json({ bookings: rows });
+  } catch (err) { next(err); }
+});
+
 // Create a request with all its dates. Nothing is blocked until staff approve.
 requestsRouter.post('/requests', async (req, res, next) => {
   try {

@@ -11,6 +11,14 @@ const requireAdmin = (req, res, next) =>
 
 const cleanName = (v) => (typeof v === 'string' && v.trim().length >= 1 && v.trim().length <= 120 ? v.trim() : null);
 
+setupRouter.get('/tenant', async (req, res, next) => {
+  try {
+    const row = await withTenant(req.tenantId, async (c) =>
+      (await c.query('select id, name, timezone from tenant where id = $1', [req.tenantId])).rows[0]);
+    res.json({ ...row, roles: req.roles });
+  } catch (err) { next(err); }
+});
+
 setupRouter.get('/facilities', async (req, res, next) => {
   try {
     const rows = await withTenant(req.tenantId, async (c) =>

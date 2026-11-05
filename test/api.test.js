@@ -270,3 +270,13 @@ test('requests: recurring series, priority queue, conflicts, approval, cancel', 
   const audit = await owner.query("select count(*)::int n from audit_log where tenant_id = $1 and entity = 'request'", [A]);
   assert.equal(audit.rows[0].n, 4);
 });
+
+test('the web app is served', async () => {
+  const html = await (await fetch(base + '/')).text();
+  assert.match(html, /<title>CanWeUseIt<\/title>/);
+  assert.equal((await fetch(base + '/app.js')).status, 200);
+  const t = await (await send('GET', '/tenant', userA.id)).json();
+  assert.equal(t.name, 'Group A');
+  assert.equal((await fetch(base + '/bookings?start=2027-03-01', { headers: authed(userA.id) })).status, 200);
+  assert.equal((await fetch(base + '/bookings?start=nope', { headers: authed(userA.id) })).status, 400);
+});
