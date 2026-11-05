@@ -2,6 +2,7 @@ import express from 'express';
 import { authRouter } from './auth.js';
 import { query, withTenant } from './db.js';
 import { requireUser, requireTenant } from './tenant.js';
+import { setupRouter } from './setup.js';
 
 export function buildApp() {
   const app = express();
@@ -29,10 +30,12 @@ export function buildApp() {
   app.get('/spaces', requireUser, requireTenant, async (req, res, next) => {
     try {
       const rows = await withTenant(req.tenantId, async (c) =>
-        (await c.query('select id, facility_id, parent_id, name, kind, buffer_minutes from space where active order by name')).rows);
+        (await c.query('select id, facility_id, parent_id, name, kind, has_lights, buffer_minutes from space where active order by name')).rows);
       res.json({ spaces: rows });
     } catch (err) { next(err); }
   });
+
+  app.use(setupRouter);
 
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
     console.error(err);

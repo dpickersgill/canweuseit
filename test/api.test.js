@@ -15,7 +15,7 @@ const owner = new pg.Client({
   user: 'cwui_owner', password: process.env.OWNER_DB_PASSWORD,
 });
 const rnd = () => crypto.randomBytes(4).toString('hex');
-let server, base, A, B, userA, userNobody;
+let server, base, A, B, userA, userNobody, userViewer;
 const mails = [];
 const realLog = console.log;
 
@@ -32,6 +32,8 @@ before(async () => {
   userA.email = (await owner.query('select email from app_user where id=$1', [userA.id])).rows[0].email;
   userNobody = await mkUser(`nobody-${rnd()}@example.com`);
   await owner.query("insert into role_assignment (tenant_id, user_id, role) values ($1, $2, 'tenant_admin')", [A, userA.id]);
+  userViewer = await mkUser(`viewer-${rnd()}@example.com`);
+  await owner.query("insert into role_assignment (tenant_id, user_id, role) values ($1, $2, 'viewer')", [A, userViewer]);
   for (const [t, n] of [[A, 'A Field'], [B, 'B Field']]) {
     const f = (await owner.query("insert into facility (tenant_id, name) values ($1, 'Park') returning id", [t])).rows[0].id;
     await owner.query("insert into space (tenant_id, facility_id, name) values ($1, $2, $3)", [t, f, n]);
@@ -113,4 +115,37 @@ test('tenant setting does not leak between requests on the same connection', asy
   await fetch(base + '/spaces', { headers: { cookie } });
   const { rows } = await pool.query('select count(*)::int n from space'); // no tenant set on this checkout
   assert.equal(rows[0].n, 0);
+});
+
+const authed = (uid, extra = {}) => ({ 'content-type': 'application/json', cookie: `cwui_session=${makeSession(uid)}`, ...extra });
+const send = (method, path, uid, body) => fetch(base + path, { method, headers: authed(uid), body: body && JSON.stringify(body) });
+
+test('admin builds facility > field > sub-fields with lights', async () => {
+  const f = await (await send('POST', '/facilities', userA.id, { name: `Friendship ${rnd()}` })).json();
+  assert.ok(f.id);
+  const field = await (await send('POST', '/spaces', userA.id, { facilityId: f.id, name: 'Whole Field', hasLights: false })).json();
+  assert.equal(field.has_lights, false);
+  const upper = await send('POST', '/spaces', userA.id, { facilityId: f.id, parentId: field.id, name: 'Upper' });
+  assert.equal(upper.status, 201);
+  const lit = await (await send('PATCH', `/spaces/${field.id}`, userA.id, { hasLights: true })).json();
+  assert.equal(lit.has_lights, true);
+  const list = await (await send('GET', '/spaces', userA.id)).json();
+  assert.ok(list.spaces.some((x) => x.name === 'Upper' && x.parent_id === field.id));
+});
+
+test('setup rules: viewers can read but not change; bad input is refused', async () => {
+  assert.equal((await send('GET', '/facilities', userViewer)).status, 200);
+  assert.equal((await send('POST', '/facilities', userViewer, { name: 'Nope' })).status, 403);
+  assert.equal((await send('POST', '/facilities', userA.id, {})).status, 400);
+  assert.equal((await send('POST', '/spaces', userA.id, { name: 'x' })).status, 400);
+  assert.equal((await send('PATCH', '/spaces/not-a-uuid', userA.id, { name: 'x' })).status, 404);
+});
+
+test('a space cannot be attached to another tenant\'s facility or parent', async () => {
+  const fB = (await owner.query("insert into facility (tenant_id, name) values ($1, $2) returning id", [B, `B-${rnd()}`])).rows[0].id;
+  const r = await send('POST', '/spaces', userA.id, { facilityId: fB, name: 'Sneaky' });
+  assert.equal(r.status, 400);
+  const sB = (await owner.query("insert into space (tenant_id, facility_id, name) values ($1, $2, 'B-space') returning id", [B, fB])).rows[0].id;
+  const fA = (await owner.query("insert into facility (tenant_id, name) values ($1, $2) returning id", [A, `A-${rnd()}`])).rows[0].id;
+  assert.equal((await send('POST', '/spaces', userA.id, { facilityId: fA, parentId: sB, name: 'Sneaky2' })).status, 400);
 });
