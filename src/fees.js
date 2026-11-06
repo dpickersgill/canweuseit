@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { withTenant } from './db.js';
 import { requireUser, requireTenant, hasRole } from './tenant.js';
 import { toCsv } from './admin.js';
+import { nextInvoiceNumber } from './invoicelib.js';
 
 export const feesRouter = Router();
 feesRouter.use(requireUser, requireTenant);
@@ -75,9 +76,7 @@ feesRouter.post('/requests/:id/invoice', requireStaff, async (req, res, next) =>
       if (!p) return { status: 404, body: { error: 'Request not found' } };
       if (!p.lines.length) return { status: 400, body: { error: 'No fees apply. Add a rate for these fields first', unpriced: p.unpriced } };
       if (req.body?.preview) return { status: 200, body: { preview: true, lines: p.lines, totalCents: p.totalCents, unpriced: p.unpriced } };
-      await c.query('select pg_advisory_xact_lock(hashtext($1))', [`invoice:${req.tenantId}`]);
-      const n = (await c.query('select count(*)::int n from invoice')).rows[0].n + 1;
-      const number = `INV-${new Date().getUTCFullYear()}-${String(n).padStart(4, '0')}`;
+      const number = await nextInvoiceNumber(c, req.tenantId);
       const inv = (await c.query(
         "insert into invoice (tenant_id, organization_id, request_id, number, amount_cents, due_on, note, created_by) values ($1,$2,$3,$4,$5, current_date + $6::int, $7, $8) returning id, number",
         [req.tenantId, p.request.organization_id, p.request.id, number, p.totalCents, dueDays, req.body?.note ? String(req.body.note).slice(0, 300) : null, req.userId])).rows[0];
@@ -93,13 +92,14 @@ feesRouter.get('/invoices', async (req, res, next) => {
   try {
     const mine = req.roles.map((r) => r.organizationId).filter(Boolean);
     const rows = await withTenant(req.tenantId, async (c) => (await c.query(
-      `select i.id, i.number, i.status, i.amount_cents as "amountCents", i.due_on::text as "dueOn", i.note, i.created_at as "createdAt", i.paid_at as "paidAt", i.paid_method as "paidMethod", i.paid_ref as "paidRef",
+      `select i.id, i.number, i.status, i.kind, i.refunded_cents as "refundedCents", i.amount_cents as "amountCents", i.due_on::text as "dueOn", i.note, i.created_at as "createdAt", i.paid_at as "paidAt", i.paid_method as "paidMethod", i.paid_ref as "paidRef",
               i.organization_id as "organizationId", o.name as organization, r.title as request,
               (i.status = 'open' and i.due_on < current_date) as overdue,
               (select json_agg(json_build_object('description', l.description, 'amountCents', l.amount_cents)) from invoice_line l where l.invoice_id = i.id) as lines
          from invoice i join organization o on o.id = i.organization_id left join request r on r.id = i.request_id
         where ($1::text is null or i.status = $1) order by i.created_at desc limit 500`, [req.query.status || null])).rows);
-    res.json({ invoices: isStaff(req) ? rows : rows.filter((r) => mine.includes(r.organizationId)) });
+    const t = await withTenant(req.tenantId, async (c) => (await c.query('select t.payments_ready, p.online_payments from tenant t join plan p on p.code = t.plan_code where t.id = $1', [req.tenantId])).rows[0]);
+    res.json({ invoices: isStaff(req) ? rows : rows.filter((r) => mine.includes(r.organizationId)), payOnline: !!(t.payments_ready && t.online_payments) });
   } catch (err) { next(err); }
 });
 
@@ -128,8 +128,8 @@ feesRouter.post('/invoices/:id/void', requireStaff, async (req, res, next) => {
 feesRouter.get('/export/invoices.csv', requireStaff, async (req, res, next) => {
   try {
     const rows = await withTenant(req.tenantId, async (c) => (await c.query(
-      `select i.number, o.name as organization, r.title as request, i.status, round(i.amount_cents / 100.0, 2) as amount, i.due_on::text as due, i.paid_at::date::text as paid, i.paid_method as method, i.paid_ref as reference
+      `select i.number, i.kind, o.name as organization, r.title as request, i.status, round(i.amount_cents / 100.0, 2) as amount, round(i.refunded_cents / 100.0, 2) as refunded, i.due_on::text as due, i.paid_at::date::text as paid, i.paid_method as method, i.paid_ref as reference
          from invoice i join organization o on o.id = i.organization_id left join request r on r.id = i.request_id order by i.created_at`)).rows);
-    res.set('Content-Type', 'text/csv; charset=utf-8').set('Content-Disposition', 'attachment; filename="invoices.csv"').send(toCsv(['number', 'organization', 'request', 'status', 'amount', 'due', 'paid', 'method', 'reference'], rows));
+    res.set('Content-Type', 'text/csv; charset=utf-8').set('Content-Disposition', 'attachment; filename="invoices.csv"').send(toCsv(['number', 'kind', 'organization', 'request', 'status', 'amount', 'refunded', 'due', 'paid', 'method', 'reference'], rows));
   } catch (err) { next(err); }
 });

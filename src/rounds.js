@@ -4,6 +4,7 @@ import { requireUser, requireTenant, hasRole } from './tenant.js';
 import { isDate, localToUtc } from './time.js';
 import { localParts, checkDates } from './rules.js';
 import { decideRequest } from './requests.js';
+import { atRiskOrgs } from './reports.js';
 import { notify } from './notify.js';
 
 export const roundsRouter = Router();
@@ -121,12 +122,15 @@ roundsRouter.post('/rounds/:id/allocate', requireAdmin, async (req, res, next) =
       await withTenant(req.tenantId, async (c) => {
         const round = (await c.query('select * from allocation_round where id = $1', [req.params.id])).rows[0];
         if (!round) { out = { status: 404, body: { error: 'Round not found' } }; return; }
-        const { rows: queue } = await c.query(
+        const risk = await atRiskOrgs(c, req.tenantId);
+        const { rows: ordered } = await c.query(
           `select r.id, r.title, r.organization_id, r.requested_by, o.name as organization,
                   coalesce(sum(extract(epoch from (bd.ends_at - bd.starts_at)) / 3600) filter (where bd.status = 'pending'), 0) as hours
              from request r join organization o on o.id = r.organization_id join booking_date bd on bd.request_id = r.id
             where r.round_id = $1 and r.status = 'pending' group by r.id, o.name, o.tier
             order by o.tier desc, r.priority_snapshot desc, r.submitted_at asc`, [round.id]);
+        // groups over the no-show limit go after everyone else (stable, so tier order holds within each part)
+        const queue = [...ordered.filter((q) => !risk.has(q.organization_id)), ...ordered.filter((q) => risk.has(q.organization_id))];
         const used = new Map();
         if (round.max_hours_per_org != null) {
           const { rows } = await c.query(

@@ -13,7 +13,7 @@ const validZone = (z) => { try { new Intl.DateTimeFormat('en-US', { timeZone: z 
 settingsRouter.get('/settings', requireAdmin, async (req, res, next) => {
   try {
     const row = await withTenant(req.tenantId, async (c) => (await c.query(
-      'select name, timezone, latitude, longitude, daylight_rule as "daylightRule", insurance_rule as "insuranceRule", cancel_notice_hours as "cancelNoticeHours", hold_unpaid as "holdUnpaid", min_coverage as "minCoverage", require_additional_insured as "requireAdditionalInsured", slug from tenant where id = $1', [req.tenantId])).rows[0]);
+      'select name, timezone, latitude, longitude, daylight_rule as "daylightRule", insurance_rule as "insuranceRule", cancel_notice_hours as "cancelNoticeHours", hold_unpaid as "holdUnpaid", min_coverage as "minCoverage", require_additional_insured as "requireAdditionalInsured", deposit_cents as "depositCents", min_use_pct as "minUsePct", no_show_limit as "noShowLimit", plan_code as "plan", slug from tenant where id = $1', [req.tenantId])).rows[0]);
     res.json(row);
   } catch (err) { next(err); }
 });
@@ -32,6 +32,9 @@ settingsRouter.patch('/settings', requireAdmin, async (req, res, next) => {
     if (b.cancelNoticeHours !== undefined) { if (!(Number.isInteger(b.cancelNoticeHours) && b.cancelNoticeHours >= 0 && b.cancelNoticeHours <= 720)) return res.status(400).json({ error: 'cancelNoticeHours must be 0 to 720' }); add('cancel_notice_hours', b.cancelNoticeHours); }
     if (b.minCoverage !== undefined) { const v = b.minCoverage === null || b.minCoverage === '' ? null : Number(b.minCoverage); if (v !== null && !(Number.isInteger(v) && v >= 0)) return res.status(400).json({ error: 'minCoverage must be a whole number of dollars' }); add('min_coverage', v); }
     if (b.requireAdditionalInsured !== undefined) { if (typeof b.requireAdditionalInsured !== 'boolean') return res.status(400).json({ error: 'requireAdditionalInsured must be true or false' }); add('require_additional_insured', b.requireAdditionalInsured); }
+    if (b.depositCents !== undefined) { if (!(Number.isInteger(b.depositCents) && b.depositCents >= 0 && b.depositCents <= 10000000)) return res.status(400).json({ error: 'depositCents must be 0 to 10000000' }); add('deposit_cents', b.depositCents); }
+    if (b.minUsePct !== undefined) { if (!(b.minUsePct === null || (Number.isInteger(b.minUsePct) && b.minUsePct >= 1 && b.minUsePct <= 100))) return res.status(400).json({ error: 'minUsePct must be 1 to 100, or null' }); add('min_use_pct', b.minUsePct); }
+    if (b.noShowLimit !== undefined) { if (!(b.noShowLimit === null || (Number.isInteger(b.noShowLimit) && b.noShowLimit >= 1 && b.noShowLimit <= 50))) return res.status(400).json({ error: 'noShowLimit must be 1 to 50, or null' }); add('no_show_limit', b.noShowLimit); }
     if (b.holdUnpaid !== undefined) { if (typeof b.holdUnpaid !== 'boolean') return res.status(400).json({ error: 'holdUnpaid must be true or false' }); add('hold_unpaid', b.holdUnpaid); }
     if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
     vals.push(req.tenantId);

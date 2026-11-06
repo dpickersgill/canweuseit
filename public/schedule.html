@@ -4,22 +4,4 @@
 <link rel="stylesheet" href="/app.css">
 <style>body{background:var(--chalk)}.wrap{max-width:760px;margin:0 auto;padding:16px}.ev{background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-top:8px}.ev b{display:block}h3.d{margin:18px 0 0;font-size:1rem}.embed .hd{display:none}</style>
 </head><body><div class="wrap" id="w"><p class="muted">Loading…</p></div>
-<script type="module">
-const token = location.pathname.split('/').filter(Boolean)[1] || '';
-if (new URLSearchParams(location.search).has('embed')) document.body.classList.add('embed');
-const w = document.getElementById('w');
-const el = (t, a = {}, ...k) => { const n = document.createElement(t); for (const [x, v] of Object.entries(a)) { if (v != null) n.setAttribute(x, v); } n.append(...k.flat().filter((y) => y != null)); return n; };
-const r = await fetch(`/public-api/schedule/${encodeURIComponent(token)}`);
-if (!r.ok) w.replaceChildren(el('p', {}, 'This schedule link is not active.'));
-else {
-  const s = await r.json();
-  const f = (d, o) => new Intl.DateTimeFormat('en-US', { timeZone: s.timezone, ...o }).format(new Date(d));
-  document.title = `${s.organization || s.name} schedule`;
-  const days = new Map();
-  for (const e of s.events) { const k = f(e.startsAt, { weekday: 'long', month: 'long', day: 'numeric' }); if (!days.has(k)) days.set(k, []); days.get(k).push(e); }
-  w.replaceChildren(el('div', { class: 'hd' }, el('h1', {}, s.organization ? `${s.organization} schedule` : `${s.name} schedule`), el('p', { class: 'muted' }, 'Approved field time for the next 90 days.')),
-    ...(days.size ? [...days].flatMap(([d, list]) => [el('h3', { class: 'd' }, d), ...list.map((e) => el('div', { class: 'ev' },
-      el('b', {}, `${f(e.startsAt, { hour: 'numeric', minute: '2-digit' })} to ${f(e.endsAt, { hour: 'numeric', minute: '2-digit' })}`),
-      `${e.space}, ${e.facility}`, el('br'), `${e.organization}: ${e.title}${e.label ? ` (${e.label})` : ''}`))]) : [el('p', { class: 'muted' }, 'Nothing is scheduled yet.')]));
-}
-</script></body></html>
+<script type="module" src="/js/schedule.js"></script></body></html>

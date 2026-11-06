@@ -34,7 +34,8 @@ export async function freeUp(c, tenantId, spaceId, from, to) {
     await c.query("update waitlist set status = 'notified', notified_at = now() where id = $1", [w.id]);
     const when = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(w.starts_at);
     out.push({ userId: w.user_id, kind: 'waitlist.open', subject: `Now open: ${w.space}, ${when}`,
-      text: `${w.space} is open ${when}, the time you were waiting for. Requests are approved by the group, so send a request soon.` });
+      text: `${w.space} is open ${when}, the time you were waiting for. Requests are approved by the group, so send a request soon.`,
+      sms: `${w.space} just opened up for ${when}. Request it in the app.` });
   }
   return out;
 }

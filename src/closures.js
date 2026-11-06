@@ -99,7 +99,8 @@ closuresRouter.post('/closures', requireCloser, async (req, res, next) => {
       const byUser = new Map();
       for (const h of cancelled) { if (!byUser.has(h.requested_by)) byUser.set(h.requested_by, []); byUser.get(h.requested_by).push(h); }
       notify(req.tenantId, [...byUser].map(([userId, list]) => ({ userId, kind: 'closure', subject: `Cancelled: ${reason}`,
-        text: `Closure: ${reason}.\n\nThese bookings were cancelled:\n${list.map((h) => `- ${h.title}, ${fmt(h.starts_at)}`).join('\n')}` })));
+        text: `Closure: ${reason}.\n\nThese bookings were cancelled:\n${list.map((h) => `- ${h.title}, ${fmt(h.starts_at)}`).join('\n')}`,
+        sms: `${reason}. Cancelled: ${list.slice(0, 2).map((h) => `${h.title} ${fmt(h.starts_at)}`).join('; ')}${list.length > 2 ? ` and ${list.length - 2} more` : ''}.` })));
     }
   } catch (err) {
     if (err.http) return res.status(err.http).json({ error: err.message });

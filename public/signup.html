@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Start your group, CanWeUseIt</title>
+<link rel="stylesheet" href="/app.css">
+</head><body class="public-page">
+<main id="main" class="public-wrap">
+  <h1>Start your group on CanWeUseIt</h1>
+  <p class="muted">For the league, district or town that hands out field time. Free for one site and up to 3 fields. Clubs and schools that request time never pay.</p>
+  <form id="f" class="panel stack" novalidate>
+    <div><label for="name">Name of your group</label><input id="name" required maxlength="120" autocomplete="organization" placeholder="Valley Youth Soccer Association"></div>
+    <div><label for="slug">Short name for your web address</label><input id="slug" required maxlength="40" pattern="[a-z0-9-]+" aria-describedby="slug-help"><p id="slug-help" class="muted small" aria-live="polite"></p></div>
+    <div><label for="tz">Time zone</label><select id="tz"></select></div>
+    <div class="grid2"><div><label for="full">Your name</label><input id="full" required maxlength="120" autocomplete="name"></div>
+      <div><label for="email">Your email</label><input id="email" type="email" required maxlength="254" autocomplete="email"></div></div>
+    <label class="row inline-check" for="agree"><input id="agree" type="checkbox"> <span>I accept the <a href="/terms" target="_blank">terms</a> and <a href="/privacy" target="_blank">privacy policy</a></span></label>
+    <div id="msg" role="status" aria-live="polite"></div>
+    <button class="btn" type="submit">Create my group</button>
+  </form>
+  <p class="muted small">Already using it? <a href="/">Sign in</a>.</p>
+</main>
+<script type="module" src="/js/signup.js"></script>
+</body></html>

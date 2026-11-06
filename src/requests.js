@@ -4,6 +4,7 @@ import { requireUser, requireTenant, hasRole, staffScope } from './tenant.js';
 import { expandWeekly, isDate, isTime, localToUtc } from './time.js';
 import { checkDates, summarize } from './rules.js';
 import { notify, staffIds } from './notify.js';
+import { ensureDeposit } from './invoicelib.js';
 import { ensurePermit } from './permitlib.js';
 import { freeUp } from './availability.js';
 
@@ -66,7 +67,7 @@ export async function decideRequest(c, { tenantId, requestId, userId, decision, 
   }
   const status = decision === 'approve' ? 'approved' : decision === 'decline' ? 'declined' : 'cancelled';
   await c.query('update request set status = $2 where id = $1', [requestId, status]);
-  if (decision === 'approve' && confirmed > 0) await ensurePermit(c, { tenantId, requestId, userId });
+  if (decision === 'approve' && confirmed > 0) { await ensurePermit(c, { tenantId, requestId, userId }); await ensureDeposit(c, { tenantId, requestId, userId }); }
   await c.query('insert into approval (tenant_id, request_id, decided_by, decision, note) values ($1,$2,$3,$4,$5)',
     [tenantId, requestId, userId, decision === 'approve' ? 'approved' : decision === 'decline' ? 'declined' : 'returned', note || null]);
   await c.query("insert into audit_log (tenant_id, actor_id, action, entity, entity_id, detail) values ($1,$2,$3,'request',$4,$5)",
@@ -374,7 +375,8 @@ requestsRouter.post('/booking-dates/:id/cancel', async (req, res, next) => {
     if (out.fresh && out.d.requested_by !== req.userId) {
       const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 500) : '';
       notify(req.tenantId, [{ userId: out.d.requested_by, kind: 'date.cancelled', subject: `Date cancelled: ${out.d.title}`,
-        text: `${day(out.d.starts_at, tz)} was cancelled for "${out.d.title}".${note ? `\n\nReason: ${note}` : ''}` }]);
+        text: `${day(out.d.starts_at, tz)} was cancelled for "${out.d.title}".${note ? `\n\nReason: ${note}` : ''}`,
+        sms: `${out.d.title} on ${day(out.d.starts_at, tz)} was cancelled.${note ? ` ${note.slice(0, 120)}` : ''}` }]);
     }
     if (out.fresh && late) {
       const staff = (await staffIds(req.tenantId)).filter((u) => u !== req.userId);
