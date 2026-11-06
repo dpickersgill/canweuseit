@@ -23,6 +23,7 @@ settingsRouter.patch('/settings', requireAdmin, async (req, res, next) => {
     const b = req.body || {};
     const sets = [], vals = [];
     const add = (col, v) => { vals.push(v); sets.push(`${col} = $${vals.length}`); };
+    if (b.name !== undefined) { const n = String(b.name).trim(); if (n.length < 2 || n.length > 120) return res.status(400).json({ error: 'The name must be 2 to 120 characters' }); add('name', n); }
     if (b.timezone !== undefined) { if (!validZone(b.timezone)) return res.status(400).json({ error: 'Unknown time zone' }); add('timezone', b.timezone); }
     if (b.latitude !== undefined) { const v = b.latitude === null ? null : Number(b.latitude); if (v !== null && !(v >= -90 && v <= 90)) return res.status(400).json({ error: 'latitude must be between -90 and 90' }); add('latitude', v); }
     if (b.longitude !== undefined) { const v = b.longitude === null ? null : Number(b.longitude); if (v !== null && !(v >= -180 && v <= 180)) return res.status(400).json({ error: 'longitude must be between -180 and 180' }); add('longitude', v); }

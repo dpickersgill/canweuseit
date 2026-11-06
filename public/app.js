@@ -1082,6 +1082,36 @@ function outlineThumb(s) {
   return svg;
 }
 
+// Rename anything with a one-field form in a sheet.
+function renameBox(title, current, save) {
+  sheet(title, (close) => { const input = el('input', { type: 'text', value: current, maxlength: 120 });
+    return el('form', { class: 'stack', onsubmit: (e) => { e.preventDefault(); guard(async () => { if (!input.value.trim()) throw new Error('Enter a name'); await save(input.value.trim()); toast('Renamed'); close(); await loadData(); render(); }); } },
+      field('Name', input), el('button', { class: 'btn', type: 'submit' }, 'Save')); });
+}
+// Remove a field or a section: show what it affects, then archive it.
+const removeSpace = (s) => guard(async () => {
+  const p = await api(`/spaces/${s.id}?preview=1`, { method: 'DELETE' });
+  const parts = [p.sections ? `its ${p.sections} section${p.sections === 1 ? '' : 's'}` : null, p.futureBookings ? `${p.futureBookings} upcoming booking${p.futureBookings === 1 ? '' : 's'} (each group is told)` : null].filter(Boolean);
+  sheet(`Remove ${s.name}?`, (close) => el('div', { class: 'stack' },
+    el('p', {}, `${s.name} will no longer appear for booking${parts.length ? `. This also removes ${parts.join(' and cancels ')}` : ''}.`),
+    el('p', { class: 'muted small' }, 'Past bookings, invoices and reports keep it, so history stays accurate.'),
+    el('div', { class: 'actions' }, el('button', { class: 'btn danger solid', onclick: () => guard(async () => {
+      const r = await api(`/spaces/${s.id}`, { method: 'DELETE' }); close();
+      toast(`${r.name} removed${r.cancelled ? `, ${r.cancelled} booking${r.cancelled === 1 ? '' : 's'} cancelled` : ''}`); await loadData(); render();
+    }) }, 'Remove'), el('button', { class: 'btn alt', onclick: close }, 'Keep it'))));
+});
+function fieldCard(s) {
+  const sections = state.spaces.filter((x) => x.parent_id === s.id);
+  const lightsToggle = (x) => ({ label: x.has_lights ? 'Mark as no lights' : 'Mark as having lights', icon: 'lightbulb', onSelect: () => guard(async () => { await api(`/spaces/${x.id}`, { method: 'PATCH', body: { hasLights: !x.has_lights } }); toast('Saved'); await loadData(); render(); }) });
+  const actions = (x, kind) => menu(`Actions for ${x.name}`, [
+    { label: `Rename ${kind}`, icon: 'pencil', onSelect: () => renameBox(`Rename ${kind}`, x.name, (name) => api(`/spaces/${x.id}`, { method: 'PATCH', body: { name } })) },
+    lightsToggle(x), 'sep', { label: `Remove ${kind}`, icon: 'x', danger: true, onSelect: () => removeSpace(x) }]);
+  return el('div', { class: 'field-card' }, outlineThumb(s),
+    el('div', { class: 'row between' }, el('b', {}, s.name), actions(s, 'field')),
+    el('span', { class: 'muted small' }, [s.has_lights ? 'Lights' : 'No lights', s.outline ? 'on the map' : 'not on the map yet'].join(', ')),
+    sections.length ? el('ul', { class: 'plain small' }, sections.map((x) => el('li', { class: 'row between' }, el('span', {}, `Section: ${x.name}`), actions(x, 'section')))) : null);
+}
+
 const SETUP_TABS = [['start', 'Getting started', 'sparkles'], ['fields', 'Fields and map', 'map'], ['people', 'Groups and people', 'users'], ['rules', 'Rules and hours', 'shield-check'], ['money', 'Plan and payments', 'credit-card'], ['import', 'Import', 'upload']];
 async function setupView() {
   const [{ facilities }, { organizations }, { hours }] = await Promise.all([api('/facilities'), api('/organizations'), api('/hours')]);
@@ -1104,6 +1134,12 @@ async function setupView() {
     page = el('div', { class: 'stack' },
       section(done === steps.length ? 'You are all set up' : 'Get set up', el('div', { class: 'checklist' }, ring, el('ol', {}, steps.map(([l, ok, tab]) => el('li', { class: ok ? 'done' : null },
         icon(ok ? 'circle-check' : 'chevron-right', { size: 18 }), ok ? l : el('button', { class: 'linkbtn', onclick: () => { state.setupTab = tab; render(); } }, l)))))),
+      (() => { const nm = el('input', { type: 'text', value: state.tenant.name, maxlength: 120 });
+        return section('Your group', field('Group name', nm, 'Shown at the top of every screen, on permits, emails and the public pages.'),
+          el('button', { class: 'btn alt', onclick: () => guard(async () => {
+            await api('/settings', { method: 'PATCH', body: { name: nm.value.trim() } });
+            state.tenant = await api('/tenant'); state.me = await (await fetch('/me')).json(); toast('Group name saved'); render();
+          }) }, 'Save name')); })(),
       planPanel(),
       section('Let new groups apply', el('p', { class: 'muted small' }, 'Share this page so a club or school can ask to join. You approve each one under Groups.'),
         el('div', { class: 'row' }, el('input', { type: 'text', readonly: true, value: `${location.origin}/apply/${state.tenant.slug}`, 'aria-label': 'Application page address', onfocus: (e) => e.target.select() }),
@@ -1115,9 +1151,9 @@ async function setupView() {
     const spName = el('input', { type: 'text', placeholder: 'Upper field' });
     const spLights = el('input', { type: 'checkbox', id: 'lights' });
     page = el('div', { class: 'stack' },
-      section('Fields', state.spaces.length ? facilities.map((f) => el('div', { class: 'stack' }, el('h4', { class: 'row' }, icon('map-pin', { size: 18 }), f.name),
-        el('div', { class: 'field-cards' }, state.spaces.filter((s) => s.facility_id === f.id && !s.parent_id).map((s) => el('div', { class: 'field-card' }, outlineThumb(s),
-          el('b', {}, s.name), el('span', { class: 'muted small' }, [state.spaces.filter((x) => x.parent_id === s.id).length ? `${state.spaces.filter((x) => x.parent_id === s.id).length} sections` : 'No sections', s.has_lights ? 'lights' : null, s.outline ? 'on the map' : 'not on the map yet'].filter(Boolean).join(', ')))))))
+      section('Fields', state.spaces.length ? facilities.map((f) => el('div', { class: 'stack' }, el('div', { class: 'row between' }, el('h4', { class: 'row' }, icon('map-pin', { size: 18 }), f.name),
+        menu(`Actions for ${f.name}`, [{ label: 'Rename site', icon: 'pencil', onSelect: () => renameBox('Rename site', f.name, (name) => api(`/facilities/${f.id}`, { method: 'PATCH', body: { name } })) }])),
+        el('div', { class: 'field-cards' }, state.spaces.filter((s) => s.facility_id === f.id && !s.parent_id).map((s) => fieldCard(s)))))
         : emptyState('No fields yet', 'Add a site, then its fields. Halves or thirds can be added as sections.')),
       section('Add a site', el('div', { class: 'row' }, el('label', { class: 'sr-only', for: 'fac-name' }, 'Site name'), Object.assign(facName, { id: 'fac-name' }), el('button', { class: 'btn alt', onclick: () => facName.value && post('/facilities', { name: facName.value }, 'Site added') }, 'Add site'))),
       facilities.length ? section('Add a field or section', el('div', { class: 'grid2' }, field('Site', spFac), field('Part of', spParent)), field('Name', spName),

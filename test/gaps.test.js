@@ -288,3 +288,30 @@ test('field outlines for the map, legal pages and security headers', async () =>
   await call('POST', '/requests', coach2, { organizationId: org2, spaceId: lit, title: 'Count me', weekly: weekly('2029-02-06', '18:00', '19:00') });
   assert.equal(await pend(admin), before + 1); assert.equal(await pend(coach2), mine + 1);
 });
+
+test('rename the group; remove a field with its sections and future bookings', async () => {
+  assert.equal((await call('PATCH', '/settings', approver, { name: 'Ruckets' })).status, 403);
+  assert.equal((await call('PATCH', '/settings', admin, { name: 'R' })).status, 400);
+  assert.equal((await call('PATCH', '/settings', admin, { name: 'Ruckets' })).status, 200);
+  assert.equal((await json('GET', '/tenant', coach)).name, 'Ruckets');
+  assert.ok((await json('GET', '/me', approver)).tenants.some((t) => t.name === 'Ruckets'));
+
+  const f = (await q("insert into space (tenant_id, facility_id, name) values ($1,$2,'Old Pitch') returning id", [T, fac]))[0].id;
+  const half = (await q("insert into space (tenant_id, facility_id, parent_id, name) values ($1,$2,$3,'Old Half') returning id", [T, fac, f]))[0].id;
+  const r = await json('POST', '/requests', coach, { organizationId: org, spaceId: half, title: 'On the old half', weekly: weekly('2029-03-06', '18:00', '19:00') });
+  await json('POST', `/requests/${r.id}/decision`, admin, { decision: 'approve' });
+  assert.equal((await call('DELETE', `/spaces/${f}`, approver)).status, 403);
+  const pv = await json('DELETE', `/spaces/${f}?preview=1`, admin);
+  assert.deepEqual([pv.sections, pv.futureBookings], [1, 1]);
+  assert.equal((await q('select active from space where id = $1', [f]))[0].active, true, 'preview changes nothing');
+  const before = mails.length;
+  const done = await json('DELETE', `/spaces/${f}`, admin);
+  assert.equal(done.cancelled, 1);
+  assert.deepEqual((await q('select active from space where id = any($1) order by name', [[f, half]])).map((x) => x.active), [false, false]);
+  assert.equal((await q("select status from booking_date where request_id = $1", [r.id]))[0].status, 'cancelled');
+  assert.ok(!(await json('GET', '/spaces', coach)).spaces.some((s) => [f, half].includes(s.id)));
+  await waitFor(() => mails.slice(before).some((m) => /Old Pitch is no longer available/.test(m)));
+  assert.ok(mails.slice(before).some((m) => /Old Pitch is no longer available/.test(m)));
+  assert.equal((await call('DELETE', `/spaces/${f}`, admin)).status, 404, 'already removed');
+  await call('PATCH', '/settings', admin, { name: 'Gap Group' });
+});

@@ -3,6 +3,7 @@ import { withTenant } from './db.js';
 import { requireUser, requireTenant, hasRole } from './tenant.js';
 import { config } from './config.js';
 import { planUsage, checkLimit } from './planlib.js';
+import { notify } from './notify.js';
 
 export const setupRouter = Router();
 setupRouter.use(requireUser, requireTenant);
@@ -121,4 +122,37 @@ setupRouter.patch('/facilities/:id', requireAdmin, async (req, res, next) => {
     const row = await withTenant(req.tenantId, async (c) => (await c.query(`update facility set ${sets.join(', ')} where id = $${vals.length} returning id, name, latitude::float, longitude::float`, vals)).rows[0]);
     row ? res.json(row) : res.status(404).json({ error: 'Facility not found' });
   } catch (err) { if (err.code === '22P02') return res.status(404).json({ error: 'Facility not found' }); next(err); }
+});
+
+// Remove a field (or a section). It is archived, not erased: past bookings, invoices and reports still point at it.
+// Its sections go with it, and future bookings on any of them are cancelled and the requesters told. ?preview=1 only counts.
+setupRouter.delete('/spaces/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const preview = req.query.preview === '1';
+    const out = await withTenant(req.tenantId, async (c) => {
+      const sp = (await c.query('select id, name from space where id = $1 and active', [req.params.id])).rows[0];
+      if (!sp) return { status: 404, body: { error: 'Field not found' } };
+      const ids = (await c.query('select space_descendants($1) as id', [sp.id])).rows.map((r) => r.id);
+      const dates = (await c.query(
+        `select bd.id, bd.status, bd.starts_at, r.title, r.requested_by from booking_date bd join request r on r.id = bd.request_id
+          where bd.space_id = any($1) and bd.status in ('confirmed','pending','flagged') and bd.ends_at > now()`, [ids])).rows;
+      if (preview) return { status: 200, body: { preview: true, name: sp.name, sections: ids.length - 1, futureBookings: dates.length } };
+      for (const d of dates) {
+        if (d.status === 'confirmed') await c.query('select cancel_booking_date($1)', [d.id]);
+        else await c.query("update booking_date set status = 'cancelled' where id = $1", [d.id]);
+      }
+      await c.query('update space set active = false where id = any($1)', [ids]);
+      await c.query("insert into audit_log (tenant_id, actor_id, action, entity, entity_id, detail) values ($1,$2,'space.remove','space',$3,$4)",
+        [req.tenantId, req.userId, sp.id, JSON.stringify({ name: sp.name, sections: ids.length - 1, cancelled: dates.length })]);
+      return { status: 200, body: { ok: true, name: sp.name, sections: ids.length - 1, cancelled: dates.length }, dates, sp };
+    });
+    res.status(out.status).json(out.body);
+    if (out.dates?.length) {
+      const byUser = new Map();
+      for (const d of out.dates) byUser.set(d.requested_by, [...(byUser.get(d.requested_by) || []), d]);
+      notify(req.tenantId, [...byUser].map(([userId, list]) => ({ userId, kind: 'space.removed', subject: `${out.sp.name} is no longer available`,
+        text: `${out.sp.name} has been taken out of use. ${list.length} upcoming date${list.length === 1 ? ' was' : 's were'} cancelled for: ${[...new Set(list.map((d) => d.title))].join(', ')}. Please request another field.`,
+        sms: `${out.sp.name} is no longer available; ${list.length} upcoming date${list.length === 1 ? '' : 's'} cancelled.` })));
+    }
+  } catch (err) { if (err.code === '22P02') return res.status(404).json({ error: 'Field not found' }); next(err); }
 });
