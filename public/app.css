@@ -181,3 +181,13 @@ ul.plain { list-style: none; margin: 0; padding: 0; } ul.plain li { padding: 8px
 input[readonly] { background: #f6f7f4; }
 .row > input[type=date], .row > input[type=time] { width: auto; flex: 0 1 170px; }
 .ticks span:last-child { transform: translateX(-100%); }
+
+/* bigger-facility tools */
+.bulkbar { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; box-shadow: 0 2px 8px rgba(0,0,0,.08); margin-bottom: 12px; }
+.pick { display: flex; align-items: flex-start; padding-top: 4px; } .pick input { width: 22px; height: 22px; }
+.grow-1 { flex: 1; min-width: 0; }
+.okbox { background: #e5f3e6; border: 1px solid #a9d3ad; border-radius: 8px; padding: 10px 12px; }
+.filters summary, details summary { cursor: pointer; font-weight: 600; }
+.filters { margin-bottom: 12px; } details > .stack, details > .grid2 { margin-top: 10px; }
+.plain.small li { padding: 5px 0; }
+.item.stack { display: grid; gap: 8px; }
