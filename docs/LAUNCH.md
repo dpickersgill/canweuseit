@@ -32,11 +32,20 @@ Deploy:
 ```
 gcloud run deploy cwui-api-prod --source . --region us-east4 --min-instances 1 \
   --add-cloudsql-instances canweuseit-app:us-east4:canweuseit-pg \
-  --set-env-vars NODE_ENV=production,APP_URL=https://canweuseit.com,DB_HOST=/cloudsql/canweuseit-app:us-east4:canweuseit-pg,DB_NAME=canweuseit_prod,DB_USER=cwui_app,LEGAL_ENTITY="Your Company LLC",LEGAL_CONTACT=privacy@canweuseit.com \
+  --set-env-vars NODE_ENV=production,APP_URL=https://canweuseit.com,DB_HOST=/cloudsql/canweuseit-app:us-east4:canweuseit-pg,DB_NAME=canweuseit_prod,DB_USER=cwui_app,PLATFORM_ADMIN_EMAILS=you@example.com \
   --set-secrets SESSION_SECRET=cwui-session-prod:latest,DB_PASSWORD=cwui-app-password:latest,POSTMARK_TOKEN=postmark-token:latest
 ```
 
-Then point `canweuseit.com` at the service (Cloud Run domain mapping, or a load balancer if the region doesn't offer mapping).
+Then point `canweuseit.com` at the service. us-east4 supports Cloud Run domain mapping (a Google preview feature; a global load balancer is the heavier option):
+
+```
+gcloud domains verify canweuseit.com          # Search Console: add the TXT record it gives you, choose Domain
+gcloud beta run domain-mappings create --service cwui-api-prod --domain canweuseit.com --region us-east4
+gcloud beta run domain-mappings create --service cwui-api-prod --domain www.canweuseit.com --region us-east4
+gcloud beta run domain-mappings describe --domain canweuseit.com --region us-east4
+```
+
+Add the A and AAAA records it lists at `@`, and a CNAME `www` → `ghs.googlehosted.com`. On Cloudflare set each one to **DNS only** (grey cloud) and turn off **Always Use HTTPS** until the certificate is issued (15 minutes to 24 hours).
 
 Legal pages (`/privacy`, `/terms`, `/dpa`, `/accessibility`) are drafts. Set `LEGAL_ENTITY`, `LEGAL_CONTACT` and `LEGAL_STATE`, and have a lawyer read them before the first paying customer.
 
@@ -47,7 +56,7 @@ Legal pages (`/privacy`, `/terms`, `/dpa`, `/accessibility`) are drafts. Set `LE
    - **Your account**: events `checkout.session.completed`, `checkout.session.async_payment_succeeded`
    - **Connected accounts**: event `account.updated`
 3. Set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and `STRIPE_CONNECT_WEBHOOK_SECRET` on the service. Use test keys on staging.
-4. The platform fee defaults to 1% per payment (`tenant.platform_fee_bps`). Card payments come with Standard and Pro.
+4. CanWeUseIt takes no fee on card payments (`tenant.platform_fee_bps` is 0). Card payments come with the Community and League plans.
 
 ## 4. Text alerts (Twilio)
 
