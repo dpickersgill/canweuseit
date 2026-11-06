@@ -50,7 +50,7 @@ peopleRouter.get('/organizations', async (req, res, next) => {
   try {
     const mine = new Set(req.roles.map((r) => r.organizationId).filter(Boolean));
     const rows = await withTenant(req.tenantId, async (c) =>
-      (await c.query('select id, name, kind from organization order by name')).rows);
+      (await c.query('select id, name, kind, auto_approve as "autoApprove" from organization order by name')).rows);
     res.json({ organizations: isStaff(req) ? rows : rows.filter((o) => mine.has(o.id)) });
   } catch (err) { next(err); }
 });

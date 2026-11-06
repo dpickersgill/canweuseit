@@ -5,6 +5,12 @@ import { requireUser, requireTenant } from './tenant.js';
 import { setupRouter } from './setup.js';
 import { peopleRouter } from './people.js';
 import { requestsRouter } from './requests.js';
+import { closuresRouter } from './closures.js';
+import { settingsRouter } from './settings.js';
+import { complianceRouter } from './compliance.js';
+import { calendarPublic, calendarRouter } from './calendar.js';
+import { reportsRouter } from './reports.js';
+import { importRouter } from './import.js';
 
 export function buildApp() {
   const app = express();
@@ -19,6 +25,7 @@ export function buildApp() {
   });
 
   app.use('/auth', authRouter);
+  app.use(calendarPublic); // secret-URL feeds, no session
 
   // Who am I, and which tenants do I belong to?
   app.get('/me', requireUser, async (req, res, next) => {
@@ -41,6 +48,12 @@ export function buildApp() {
   app.use(setupRouter);
   app.use(peopleRouter);
   app.use(requestsRouter);
+  app.use(closuresRouter);
+  app.use(settingsRouter);
+  app.use(complianceRouter);
+  app.use(calendarRouter);
+  app.use(reportsRouter);
+  app.use(importRouter);
 
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
     console.error(err);

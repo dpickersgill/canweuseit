@@ -259,7 +259,7 @@ test('requests: recurring series, priority queue, conflicts, approval, cancel', 
   // cancelling one Upper date frees it up; only the owning org's admin or staff may
   const r1view = (await (await send('GET', '/requests', approver)).json()).requests.find((r) => r.id === r1.id);
   const firstDate = r1view.dates[0].id;
-  assert.equal((await send('POST', `/booking-dates/${firstDate}/cancel`, b1)).status, 403);
+  assert.equal((await send('POST', `/booking-dates/${firstDate}/cancel`, b2)).status, 403); // another club's coach
   assert.equal((await send('POST', `/booking-dates/${firstDate}/cancel`, approver)).status, 200);
   const slots = await owner.query("select count(*)::int n from blocked_slot where booking_date_id = $1", [firstDate]);
   assert.equal(slots.rows[0].n, 0);
