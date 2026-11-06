@@ -13,7 +13,7 @@ const validZone = (z) => { try { new Intl.DateTimeFormat('en-US', { timeZone: z 
 settingsRouter.get('/settings', requireAdmin, async (req, res, next) => {
   try {
     const row = await withTenant(req.tenantId, async (c) => (await c.query(
-      'select name, timezone, latitude, longitude, daylight_rule as "daylightRule", insurance_rule as "insuranceRule" from tenant where id = $1', [req.tenantId])).rows[0]);
+      'select name, timezone, latitude, longitude, daylight_rule as "daylightRule", insurance_rule as "insuranceRule", cancel_notice_hours as "cancelNoticeHours", hold_unpaid as "holdUnpaid", min_coverage as "minCoverage", require_additional_insured as "requireAdditionalInsured", slug from tenant where id = $1', [req.tenantId])).rows[0]);
     res.json(row);
   } catch (err) { next(err); }
 });
@@ -29,6 +29,10 @@ settingsRouter.patch('/settings', requireAdmin, async (req, res, next) => {
     for (const [key, col] of [['daylightRule', 'daylight_rule'], ['insuranceRule', 'insurance_rule']]) {
       if (b[key] !== undefined) { if (!LEVELS.includes(b[key])) return res.status(400).json({ error: `${key} must be off, warn or block` }); add(col, b[key]); }
     }
+    if (b.cancelNoticeHours !== undefined) { if (!(Number.isInteger(b.cancelNoticeHours) && b.cancelNoticeHours >= 0 && b.cancelNoticeHours <= 720)) return res.status(400).json({ error: 'cancelNoticeHours must be 0 to 720' }); add('cancel_notice_hours', b.cancelNoticeHours); }
+    if (b.minCoverage !== undefined) { const v = b.minCoverage === null || b.minCoverage === '' ? null : Number(b.minCoverage); if (v !== null && !(Number.isInteger(v) && v >= 0)) return res.status(400).json({ error: 'minCoverage must be a whole number of dollars' }); add('min_coverage', v); }
+    if (b.requireAdditionalInsured !== undefined) { if (typeof b.requireAdditionalInsured !== 'boolean') return res.status(400).json({ error: 'requireAdditionalInsured must be true or false' }); add('require_additional_insured', b.requireAdditionalInsured); }
+    if (b.holdUnpaid !== undefined) { if (typeof b.holdUnpaid !== 'boolean') return res.status(400).json({ error: 'holdUnpaid must be true or false' }); add('hold_unpaid', b.holdUnpaid); }
     if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
     vals.push(req.tenantId);
     await withTenant(req.tenantId, (c) => c.query(`update tenant set ${sets.join(', ')} where id = $${vals.length}`, vals));
@@ -72,11 +76,15 @@ settingsRouter.delete('/hours/:id', requireAdmin, async (req, res, next) => {
   } catch (err) { if (err.code === '22P02') return res.status(404).json({ error: 'Not found' }); next(err); }
 });
 
-// Trusted organizations (approved automatically when nothing conflicts).
+// Trusted organizations (approved automatically when nothing conflicts) and priority tier (1 to 5, higher goes first).
 settingsRouter.patch('/organizations/:id', requireAdmin, async (req, res, next) => {
   try {
-    if (typeof req.body?.autoApprove !== 'boolean') return res.status(400).json({ error: 'autoApprove must be true or false' });
-    const n = await withTenant(req.tenantId, async (c) => (await c.query('update organization set auto_approve = $2 where id = $1', [req.params.id, req.body.autoApprove])).rowCount);
+    const { autoApprove, tier } = req.body || {};
+    if (autoApprove !== undefined && typeof autoApprove !== 'boolean') return res.status(400).json({ error: 'autoApprove must be true or false' });
+    if (tier !== undefined && !(Number.isInteger(tier) && tier >= 1 && tier <= 5)) return res.status(400).json({ error: 'tier must be a whole number from 1 to 5' });
+    if (autoApprove === undefined && tier === undefined) return res.status(400).json({ error: 'nothing to update' });
+    const n = await withTenant(req.tenantId, async (c) => (await c.query(
+      'update organization set auto_approve = coalesce($2, auto_approve), tier = coalesce($3, tier) where id = $1', [req.params.id, autoApprove ?? null, tier ?? null])).rowCount);
     n ? res.json({ ok: true }) : res.status(404).json({ error: 'Organization not found' });
   } catch (err) { if (err.code === '22P02') return res.status(404).json({ error: 'Organization not found' }); next(err); }
 });

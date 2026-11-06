@@ -5,7 +5,7 @@ import { isDate, isTime, localToUtc } from './time.js';
 import { decideRequest } from './requests.js';
 
 export const importRouter = Router();
-importRouter.use(requireUser, requireTenant, (req, res, next) =>
+importRouter.use('/import', requireUser, requireTenant, (req, res, next) =>
   hasRole(req, 'tenant_admin') ? next() : res.status(403).json({ error: 'Only a tenant admin can import' }));
 
 const MAX_ROWS = 500;

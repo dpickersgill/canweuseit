@@ -23,7 +23,7 @@ export async function checkDates(c, { tenant, spaceId, organizationId, dates }) 
     'select weekdays, opens, closes, starts_on::text, ends_on::text, enforcement, note from space_hours where space_id is null or space_id = any($1)', [ids]);
   let docs = [];
   if (tenant.insurance_rule !== 'off') {
-    docs = (await c.query("select expires_on::text from compliance_document where organization_id = $1 and kind = 'insurance'", [organizationId])).rows;
+    docs = (await c.query("select expires_on::text, coverage_amount, additional_insured from compliance_document where organization_id = $1 and kind = 'insurance'", [organizationId])).rows;
   }
 
   return dates.map((d) => {
@@ -46,8 +46,12 @@ export async function checkDates(c, { tenant, spaceId, organizationId, dates }) 
       }
     }
     // insurance on file covering the date
-    if (tenant.insurance_rule !== 'off' && !docs.some((x) => !x.expires_on || x.expires_on >= s.day)) {
-      push(tenant.insurance_rule, 'No insurance on file covering this date');
+    if (tenant.insurance_rule !== 'off') {
+      const current = docs.filter((x) => !x.expires_on || x.expires_on >= s.day);
+      const ok = current.filter((x) => (tenant.min_coverage == null || Number(x.coverage_amount || 0) >= Number(tenant.min_coverage)) && (!tenant.require_additional_insured || x.additional_insured));
+      if (!current.length) push(tenant.insurance_rule, 'No insurance on file covering this date');
+      else if (!ok.length) push(tenant.insurance_rule, tenant.min_coverage != null && !current.some((x) => Number(x.coverage_amount || 0) >= Number(tenant.min_coverage))
+        ? `Insurance on file is below the required $${Number(tenant.min_coverage).toLocaleString('en-US')} coverage` : 'Insurance on file does not name the facility as additional insured');
     }
     return { blocks, warnings };
   });

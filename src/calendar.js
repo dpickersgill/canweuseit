@@ -53,6 +53,26 @@ calendarPublic.get('/calendar/:file', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// The same secret also opens a read-only schedule page (for parents, or embedded in a website): /s/<token>.
+calendarPublic.get('/public-api/schedule/:token', async (req, res, next) => {
+  try {
+    const token = String(req.params.token);
+    if (!/^[A-Za-z0-9_-]{20,80}$/.test(token)) return res.status(404).json({ error: 'Not found' });
+    const { rows: [feed] } = await query('select * from feed_lookup($1)', [hash(token)]);
+    if (!feed) return res.status(404).json({ error: 'Not found' });
+    const out = await withTenant(feed.tenant_id, async (c) => {
+      const t = (await c.query('select name, timezone from tenant where id = $1', [feed.tenant_id])).rows[0];
+      const org = feed.organization_id ? (await c.query('select name from organization where id = $1', [feed.organization_id])).rows[0] : null;
+      const events = (await c.query(
+        `select bd.starts_at as "startsAt", bd.ends_at as "endsAt", s.name as space, f.name as facility, o.name as organization, r.title, bd.label
+           from booking_date bd join request r on r.id = bd.request_id join space s on s.id = bd.space_id join facility f on f.id = s.facility_id join organization o on o.id = r.organization_id
+          where bd.status = 'confirmed' and bd.ends_at > now() and bd.starts_at < now() + interval '90 days' and ($1::uuid is null or r.organization_id = $1) order by bd.starts_at limit 1000`, [feed.organization_id])).rows;
+      return { name: t.name, timezone: t.timezone, organization: org?.name || null, events };
+    });
+    res.set('Cache-Control', 'private, max-age=120').json(out);
+  } catch (err) { next(err); }
+});
+
 // ---- managing your own feed links ----
 export const calendarRouter = Router();
 calendarRouter.use(requireUser, requireTenant);
@@ -77,7 +97,7 @@ calendarRouter.post('/calendar-feeds', async (req, res, next) => {
     const row = await withTenant(req.tenantId, async (c) => (await c.query(
       'insert into calendar_feed (tenant_id, user_id, organization_id, label, token_hash) values ($1,$2,$3,$4,$5) returning id', [req.tenantId, req.userId, organizationId, label, hash(token)])).rows[0]);
     const url = `${config.appUrl}/calendar/${token}.ics`;
-    res.status(201).json({ id: row.id, url, webcal: url.replace(/^https?:/, 'webcal:') });
+    res.status(201).json({ id: row.id, url, webcal: url.replace(/^https?:/, 'webcal:'), pageUrl: `${config.appUrl}/s/${token}` });
   } catch (err) { if (err.code === '22P02' || err.code === '23503') return res.status(400).json({ error: 'Invalid organization' }); next(err); }
 });
 

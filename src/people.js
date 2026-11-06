@@ -13,18 +13,19 @@ const isStaff = (req) => hasRole(req, 'tenant_admin', 'approver');
 const isOrgAdminOf = (req, orgId) => req.roles.some((r) => r.role === 'org_admin' && r.organizationId === orgId);
 
 // Find the user for an email or create one. Users are platform-level; one login can hold roles in many tenants.
-async function findOrCreateUser(email, fullName) {
+export async function findOrCreateUser(email, fullName) {
   const found = await query('select id from app_user where lower(email) = $1', [email]);
   if (found.rows.length) return found.rows[0].id;
   return (await query('insert into app_user (email, full_name) values ($1, $2) returning id', [email, fullName])).rows[0].id;
 }
 
 // Give someone a role in this tenant and email them a sign-in link.
-async function addPerson(req, { email, fullName, role, organizationId }) {
+export async function addPerson(req, { email, fullName, role, organizationId, facilityId = null, quiet = false }) {
   const userId = await findOrCreateUser(email, fullName);
   await withTenant(req.tenantId, (c) => c.query(
-    'insert into role_assignment (tenant_id, user_id, organization_id, role) values ($1, $2, $3, $4)',
-    [req.tenantId, userId, organizationId, role]));
+    'insert into role_assignment (tenant_id, user_id, organization_id, role, facility_id) values ($1, $2, $3, $4, $5)',
+    [req.tenantId, userId, organizationId, role, facilityId]));
+  if (quiet) return userId;
   const { rows: [t] } = await withTenant(req.tenantId, (c) => c.query('select name from tenant where id = $1', [req.tenantId]));
   await issueLoginLink(email, {
     subject: `You've been added to ${t.name} on CanWeUseIt`,
@@ -42,6 +43,7 @@ const parsePerson = (body) => {
 const handleDup = (res, next) => (err) => {
   if (err.code === '23505') return res.status(409).json({ error: 'That person already has that role here' });
   if (err.code === '23514') return res.status(400).json({ error: 'That role does not fit here' });
+  if (err.code === '23503' || err.code === '22P02') return res.status(400).json({ error: 'Unknown site' });
   next(err);
 };
 
@@ -50,7 +52,7 @@ peopleRouter.get('/organizations', async (req, res, next) => {
   try {
     const mine = new Set(req.roles.map((r) => r.organizationId).filter(Boolean));
     const rows = await withTenant(req.tenantId, async (c) =>
-      (await c.query('select id, name, kind, auto_approve as "autoApprove" from organization order by name')).rows);
+      (await c.query('select id, name, kind, auto_approve as "autoApprove", tier from organization order by name')).rows);
     res.json({ organizations: isStaff(req) ? rows : rows.filter((o) => mine.has(o.id)) });
   } catch (err) { next(err); }
 });
@@ -110,8 +112,11 @@ peopleRouter.post('/staff', async (req, res, next) => {
     if (!hasRole(req, 'tenant_admin')) return res.status(403).json({ error: 'Only a tenant admin can add staff' });
     const person = parsePerson(req.body);
     const role = req.body?.role;
-    if (!person || !['tenant_admin', 'approver'].includes(role)) return res.status(400).json({ error: 'email, fullName and a role of tenant_admin or approver are required' });
-    await addPerson(req, { ...person, role, organizationId: null });
+    if (!person || !['tenant_admin', 'approver', 'grounds'].includes(role)) return res.status(400).json({ error: 'email, fullName and a role of tenant_admin, approver or grounds are required' });
+    const facilityId = req.body?.facilityId || null;
+    if (facilityId && role === 'tenant_admin') return res.status(400).json({ error: 'Admins cover every site' });
+    if (role === 'grounds' && !facilityId) return res.status(400).json({ error: 'Choose the site a groundskeeper covers' });
+    await addPerson(req, { ...person, role, organizationId: null, facilityId });
     res.status(201).json({ ok: true });
   } catch (err) { handleDup(res, next)(err); }
 });

@@ -11,6 +11,11 @@ import { complianceRouter } from './compliance.js';
 import { calendarPublic, calendarRouter } from './calendar.js';
 import { reportsRouter } from './reports.js';
 import { importRouter } from './import.js';
+import { availabilityRouter } from './availability.js';
+import { adminRouter, applyPublic } from './admin.js';
+import { roundsRouter } from './rounds.js';
+import { permitsRouter, permitsPublic } from './permits.js';
+import { feesRouter } from './fees.js';
 
 export function buildApp() {
   const app = express();
@@ -26,12 +31,18 @@ export function buildApp() {
 
   app.use('/auth', authRouter);
   app.use(calendarPublic); // secret-URL feeds, no session
+  app.use(applyPublic); // group application form, no session
+  app.use(permitsPublic); // permit check, no session
+  const page = (file) => (req, res) => res.sendFile(new URL(`../public/${file}`, import.meta.url).pathname);
+  app.get('/apply/:slug', page('apply.html'));
+  app.get('/permit/:code', page('permit.html'));
+  app.get('/s/:token', page('schedule.html'));
 
   // Who am I, and which tenants do I belong to?
   app.get('/me', requireUser, async (req, res, next) => {
     try {
       const { rows: [user] } = await query('select id, email, full_name from app_user where id = $1', [req.userId]);
-      const { rows: memberships } = await query('select tenant_id, role, organization_id from user_tenants($1)', [req.userId]);
+      const { rows: memberships } = await query('select tenant_id, role, organization_id, facility_id from user_tenants($1)', [req.userId]);
       res.json({ user, memberships });
     } catch (err) { next(err); }
   });
@@ -54,6 +65,11 @@ export function buildApp() {
   app.use(calendarRouter);
   app.use(reportsRouter);
   app.use(importRouter);
+  app.use(availabilityRouter);
+  app.use(adminRouter);
+  app.use(roundsRouter);
+  app.use(permitsRouter);
+  app.use(feesRouter);
 
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
     console.error(err);
