@@ -31,7 +31,11 @@ authRouter.post('/request-link', async (req, res, next) => {
     if (!EMAIL_RE.test(email) || email.length > 254) return res.json(reply);
 
     const { rows: users } = await query('select id from app_user where lower(email) = $1', [email]);
-    if (!users.length) return res.json(reply);
+    if (!users.length) {
+      // the people who run CanWeUseIt (PLATFORM_ADMIN_EMAILS) can sign in before they belong to any group
+      if (!config.platformAdmins.includes(email)) return res.json(reply);
+      await query('insert into app_user (email, full_name) values ($1, $2) on conflict do nothing', [email, email.split('@')[0]]);
+    }
 
     await issueLoginLink(email, {
       subject: 'Your CanWeUseIt sign-in link',

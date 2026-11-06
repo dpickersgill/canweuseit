@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import pg from 'pg';
 
+const FRESH_OWNER = `fresh-${crypto.randomBytes(4).toString('hex')}@cwui.test`; // an owner with no account yet
 // a stand-in for Stripe and Twilio
 const calls = [];
 const fake = http.createServer((req, res) => {
@@ -24,7 +25,7 @@ const fake = http.createServer((req, res) => {
 await new Promise((r) => fake.listen(0, r));
 const fakeBase = `http://127.0.0.1:${fake.address().port}`;
 Object.assign(process.env, { SESSION_SECRET: 'test-secret', APP_URL: 'http://test.local', STRIPE_SECRET_KEY: 'sk_test_x', STRIPE_WEBHOOK_SECRET: 'whsec_test', STRIPE_API_BASE: fakeBase,
-  TWILIO_ACCOUNT_SID: 'AC1', TWILIO_AUTH_TOKEN: 'twtoken', TWILIO_FROM: '+15550001111', TWILIO_API_BASE: fakeBase, LEGAL_ENTITY: 'Test Fields LLC', PLATFORM_ADMIN_EMAILS: 'owner@cwui.test' });
+  TWILIO_ACCOUNT_SID: 'AC1', TWILIO_AUTH_TOKEN: 'twtoken', TWILIO_FROM: '+15550001111', TWILIO_API_BASE: fakeBase, LEGAL_ENTITY: 'Test Fields LLC', PLATFORM_ADMIN_EMAILS: `owner@cwui.test,${FRESH_OWNER}` });
 
 const { buildApp } = await import('../src/app.js');
 const { pool } = await import('../src/db.js');
@@ -322,6 +323,15 @@ test('price list and the owner console', async () => {
   const { plans } = await (await fetch(`${base}/plans`)).json();
   assert.deepEqual(plans.map((p) => [p.name, p.priceCents, p.annualCents, p.maxSites, p.maxFields, p.cardPayments]),
     [['Free', 0, 0, 1, 4, false], ['Community', 2900, 29000, 3, 15, true], ['League', 7900, 79000, null, null, true]]);
+  // the owner can ask for a sign-in link before any account exists; strangers still get nothing
+  const sent = mails.length;
+  await call('POST', '/auth/request-link', null, { email: FRESH_OWNER.toUpperCase() });
+  await call('POST', '/auth/request-link', null, { email: 'nobody@cwui.test' });
+  await waitFor(() => mails.length > sent);
+  assert.ok(mails.slice(sent).some((m) => m.includes(FRESH_OWNER)), 'owner gets a link');
+  assert.equal((await q('select 1 from app_user where lower(email) = $1', [FRESH_OWNER])).length, 1);
+  assert.ok(!mails.slice(sent).some((m) => m.includes('nobody@cwui.test')));
+  assert.equal((await q("select 1 from app_user where lower(email) = 'nobody@cwui.test'")).length, 0);
   const found = await q("select id from app_user where lower(email) = 'owner@cwui.test'");
   const owner = found.length ? found[0].id : (await q("insert into app_user (email, full_name) values ('owner@cwui.test', 'Owner') returning id"))[0].id;
   const as = (method, path, b) => fetch(base + path, { method, headers: { 'content-type': 'application/json', cookie: `cwui_session=${makeSession(owner)}` }, body: b && JSON.stringify(b) });
