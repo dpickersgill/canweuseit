@@ -25,7 +25,7 @@ const waitMail = async (n) => { for (let i = 0; i < 40 && mails.length < n; i++)
 
 before(async () => {
   await owner.connect();
-  T = (await q("insert into tenant (name, slug, latitude, longitude) values ('Rules Group', $1, 39.95, -75.17) returning id", [`rg-${rnd()}`]))[0].id;
+  T = (await q("insert into tenant (name, slug, latitude, longitude, plan_code) values ('Rules Group', $1, 39.95, -75.17, 'pro') returning id", [`rg-${rnd()}`]))[0].id;
   const user = async (label, role, orgId) => {
     const id = (await q("insert into app_user (email, full_name) values ($1,$2) returning id", [`${label}-${rnd()}@example.com`, label]))[0].id;
     await q("insert into role_assignment (tenant_id, user_id, role, organization_id) values ($1,$2,$3,$4)", [T, id, role, orgId || null]);

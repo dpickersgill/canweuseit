@@ -25,7 +25,7 @@ const tokenFrom = (mail) => new URL(mail.match(/https?:\/\/\S+/)[0]).searchParam
 
 before(async () => {
   await owner.connect();
-  const mk = async (name) => (await owner.query("insert into tenant (name, slug) values ($1, $2) returning id", [name, `t-${rnd()}`])).rows[0].id;
+  const mk = async (name) => (await owner.query("insert into tenant (name, slug, plan_code) values ($1, $2, 'pro') returning id", [name, `t-${rnd()}`])).rows[0].id;
   A = await mk('Group A'); B = await mk('Group B');
   const mkUser = async (email) => (await owner.query("insert into app_user (email, full_name) values ($1, 'Test') returning id", [email])).rows[0].id;
   userA = { id: await mkUser(`a-${rnd()}@example.com`) };

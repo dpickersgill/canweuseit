@@ -60,7 +60,7 @@ authed.post('/payments/connect', requireAdmin, async (req, res, next) => {
   try {
     const t = await withTenant(req.tenantId, async (c) => (await c.query(
       'select t.id, t.name, t.stripe_account_id, p.online_payments from tenant t join plan p on p.code = t.plan_code where t.id = $1', [req.tenantId])).rows[0]);
-    if (!t.online_payments) throw err(402, 'Online payments come with the Standard and Pro plans');
+    if (!t.online_payments) throw err(402, 'Card payments come with the Community and League plans');
     let account = t.stripe_account_id;
     if (!account) {
       const me = (await query('select email from app_user where id = $1', [req.userId])).rows[0];
@@ -94,7 +94,7 @@ authed.post('/invoices/:id/checkout', async (req, res, next) => {
     const s = await stripe('POST', 'checkout/sessions', {
       mode: 'payment', client_reference_id: out.id, customer_email: me.email,
       line_items: [{ quantity: 1, price_data: { currency: 'usd', unit_amount: out.amount_cents, product_data: { name: `${out.tenant}: invoice ${out.number}` } } }],
-      payment_intent_data: { application_fee_amount: Math.floor(out.amount_cents * out.platform_fee_bps / 10000), transfer_data: { destination: out.stripe_account_id }, metadata: { invoice_id: out.id } },
+      payment_intent_data: { application_fee_amount: out.platform_fee_bps ? Math.floor(out.amount_cents * out.platform_fee_bps / 10000) : undefined, transfer_data: { destination: out.stripe_account_id }, metadata: { invoice_id: out.id } },
       metadata: { invoice_id: out.id, tenant_id: req.tenantId },
       success_url: `${config.appUrl}/?paid=1#billing`, cancel_url: `${config.appUrl}/#billing`,
     });

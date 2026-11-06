@@ -21,6 +21,7 @@ import { teamsRouter } from './teams.js';
 import { exportsRouter } from './exports.js';
 import { profileRouter, smsPublic } from './sms.js';
 import { signupPublic } from './signup.js';
+import { platformRouter, plansPublic, isPlatformAdmin } from './platform.js';
 import { readFileSync } from 'node:fs';
 import { config } from './config.js';
 
@@ -72,6 +73,7 @@ export function buildApp() {
   app.get('/s/:token', page('schedule.html'));
   app.get('/signup', page('signup.html'));
   app.use(signupPublic);
+  app.use(plansPublic); // the price list
   for (const name of LEGAL) { const html = legalPage(name); app.get(`/${name}`, (req, res) => res.type('html').send(html)); }
 
   // Who am I, and which tenants do I belong to?
@@ -80,11 +82,12 @@ export function buildApp() {
       const { rows: [user] } = await query('select id, email, full_name from app_user where id = $1', [req.userId]);
       const { rows: memberships } = await query('select tenant_id, role, organization_id, facility_id from user_tenants($1)', [req.userId]);
       const { rows: tenants } = await query('select id, name, slug from user_tenant_names($1)', [req.userId]);
-      res.json({ user, memberships, tenants });
+      res.json({ user, memberships, tenants, platformAdmin: await isPlatformAdmin(req.userId) });
     } catch (err) { next(err); }
   });
 
   app.use(profileRouter); // your own name, phone and text alerts
+  app.use(platformRouter); // owner console, no group needed
 
   // Example tenant-scoped endpoint: every query inside withTenant is isolated by row-level security.
   app.get('/spaces', requireUser, requireTenant, async (req, res, next) => {

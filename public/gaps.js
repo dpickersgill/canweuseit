@@ -188,10 +188,10 @@ export async function paymentsPanel() {
   const dep = el('input', { type: 'number', min: '0', step: '1', value: (s.depositCents / 100).toFixed(0), 'aria-label': 'Deposit in dollars' });
   const connect = (label) => el('button', { class: 'btn small', onclick: () => guard(async () => { const r = await api('/payments/connect', { method: 'POST' }); location.href = r.url; }) }, label);
   const line = !s.serverReady ? el('p', { class: 'muted' }, 'Card payments are not switched on for this server yet.')
-    : !s.planAllows ? el('p', { class: 'muted' }, `Card payments come with the Standard and Pro plans. You are on ${s.plan}.`)
-    : !s.connected ? el('div', { class: 'stack' }, el('p', {}, `Connect a Stripe account so groups can pay invoices by card. Money goes straight to your account; CanWeUseIt keeps ${s.platformFeePercent}% of each payment, and Stripe charges its own card fee.`), connect('Connect Stripe'))
+    : !s.planAllows ? el('p', { class: 'muted' }, `Card payments come with the Community and League plans. You are on ${s.plan}.`)
+    : !s.connected ? el('div', { class: 'stack' }, el('p', {}, `Connect a Stripe account so groups can pay invoices by card. Money goes straight to your account. ${s.platformFeePercent ? `CanWeUseIt keeps ${s.platformFeePercent}% of each payment, and Stripe` : 'CanWeUseIt adds no fee; Stripe'} charges its standard card fee.`), connect('Connect Stripe'))
     : !s.ready ? el('div', { class: 'stack' }, el('p', {}, 'Stripe needs a few more details before you can take payments.'), connect('Finish Stripe setup'))
-    : el('div', { class: 'okbox' }, el('p', {}, `Card payments are on. CanWeUseIt keeps ${s.platformFeePercent}% of each payment.`));
+    : el('div', { class: 'okbox' }, el('p', {}, `Card payments are on.${s.platformFeePercent ? ` CanWeUseIt keeps ${s.platformFeePercent}% of each payment.` : ' CanWeUseIt adds no fee to card payments.'}`));
   return section('Payments', line,
     field('Refundable deposit on every approved request (0 for none)', el('div', { class: 'row' }, el('div', { class: 'affix' }, el('span', {}, '$'), dep), el('button', { class: 'btn alt small', onclick: () => guard(async () => {
       await api('/settings', { method: 'PATCH', body: { depositCents: Math.round(Number(dep.value || 0) * 100) } }); toast('Deposit saved'); }) }, 'Save')),
@@ -201,10 +201,20 @@ export async function paymentsPanel() {
 export function planPanel() {
   const p = state.tenant.plan;
   if (!p) return null;
-  const lim = (n, max, what) => `${n} ${what}${max != null ? ` of ${max}` : ''}`;
-  return section('Your plan', el('p', {}, el('b', {}, p.name), p.priceCents ? `, ${money(p.priceCents)} a month` : ', free'),
-    el('p', { class: 'muted small' }, `${lim(p.facilities, p.maxFacilities, 'sites')}, ${lim(p.fields, p.maxFields, 'fields')}. ${p.onlinePayments ? 'Card payments included.' : 'Card payments come with Standard and Pro.'}`),
-    p.plan === 'free' || p.plan === 'standard' ? el('p', { class: 'small' }, el('a', { href: `mailto:${state.tenant.contact}?subject=${encodeURIComponent(`Upgrade ${state.tenant.name}`)}` }, 'Ask to upgrade'), `: Standard ${money(14900)} a month for 3 sites and 20 fields with card payments; Pro ${money(34900)} a month with no limits.`) : null);
+  const lim = (n, max, what) => `${n} ${max === 1 || (max == null && n === 1) ? what.slice(0, -1) : what}${max != null ? ` of ${max}` : ''}`;
+  const others = el('div', { class: 'stack' });
+  guard(async () => {
+    const { plans } = await api('/plans');
+    const better = plans.filter((x) => x.priceCents > p.priceCents);
+    if (!better.length) return;
+    others.replaceChildren(el('div', { class: 'plan-grid' }, better.map((x) => el('div', { class: 'plan-card' },
+      el('b', {}, x.name), el('p', { class: 'price' }, money(x.priceCents), el('span', { class: 'muted small' }, ' a month')),
+      el('p', { class: 'muted small' }, `or ${money(x.annualCents)} a year`), el('p', { class: 'small' }, x.blurb),
+      el('a', { class: 'btn alt small', href: `mailto:${state.tenant.contact}?subject=${encodeURIComponent(`Move ${state.tenant.name} to ${x.name}`)}` }, `Ask for ${x.name}`)))));
+  });
+  return section('Your plan', el('p', {}, el('b', {}, p.name), p.priceCents ? `, ${money(p.priceCents)} a month` : ', no charge'),
+    el('p', { class: 'muted small' }, `${lim(p.facilities, p.maxFacilities, 'sites')}, ${lim(p.fields, p.maxFields, 'fields')}. ${p.onlinePayments ? 'Card payments included.' : 'Card payments come with Community and League.'} Clubs and schools that request time never pay.`),
+    others);
 }
 
 /* ---------- utilization ---------- */

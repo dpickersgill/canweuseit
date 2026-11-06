@@ -451,3 +451,10 @@ ul.plain { list-style: none; margin: 0; padding: 0; } ul.plain li { padding: 8px
 .pitch [aria-pressed="true"] .tag { background: rgba(0, 0, 0, .14); color: #17261d; }
 :root[data-theme="dark"] .ag-day h3 .today-tag { color: var(--ok); }
 @media (max-width: 900px) { .cal-tools .seg button { padding: 5px 8px; } .cal-tools .seg { flex: 0 1 auto; } .cal-tools .btn.small { padding: 6px 9px; } }
+
+.plan-grid { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.plan-card { border: 1px solid var(--border); border-radius: var(--radius-s); padding: var(--s4); display: grid; gap: 4px; align-content: start; background: var(--surface); }
+.plan-card .price { font: 700 1.6rem var(--display); margin: 0; }
+.plan-card p { margin: 0; }
+.plan-card .btn { justify-self: start; margin-top: 8px; }
+.owner-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--s3); margin-bottom: var(--s4); }

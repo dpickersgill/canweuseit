@@ -24,7 +24,7 @@ const fake = http.createServer((req, res) => {
 await new Promise((r) => fake.listen(0, r));
 const fakeBase = `http://127.0.0.1:${fake.address().port}`;
 Object.assign(process.env, { SESSION_SECRET: 'test-secret', APP_URL: 'http://test.local', STRIPE_SECRET_KEY: 'sk_test_x', STRIPE_WEBHOOK_SECRET: 'whsec_test', STRIPE_API_BASE: fakeBase,
-  TWILIO_ACCOUNT_SID: 'AC1', TWILIO_AUTH_TOKEN: 'twtoken', TWILIO_FROM: '+15550001111', TWILIO_API_BASE: fakeBase, LEGAL_ENTITY: 'Test Fields LLC' });
+  TWILIO_ACCOUNT_SID: 'AC1', TWILIO_AUTH_TOKEN: 'twtoken', TWILIO_FROM: '+15550001111', TWILIO_API_BASE: fakeBase, LEGAL_ENTITY: 'Test Fields LLC', PLATFORM_ADMIN_EMAILS: 'owner@cwui.test' });
 
 const { buildApp } = await import('../src/app.js');
 const { pool } = await import('../src/db.js');
@@ -84,6 +84,8 @@ test('online payments: connect, deposit on approval, card checkout, signed webho
   assert.ok(dep && dep.amountCents === 2500 && dep.status === 'open');
   assert.equal((await q("select count(*)::int n from invoice where request_id = $1 and kind = 'deposit'", [requestId]))[0].n, 1);
 
+  assert.equal((await q('select platform_fee_bps from tenant where id = $1', [T]))[0].platform_fee_bps, 0, 'no CanWeUseIt fee by default');
+  await q('update tenant set platform_fee_bps = 100 where id = $1', [T]); // a fee can still be set per group
   assert.equal((await call('POST', `/invoices/${dep.id}/checkout`, coach2)).status, 403);
   const co = await json('POST', `/invoices/${dep.id}/checkout`, coach);
   assert.match(co.url, /checkout\.stripe\.test/);
@@ -236,12 +238,12 @@ test('self-serve sign-up, plan limits and the group switcher', async () => {
   const founder = (await q('select id from app_user where lower(email) = $1', [email]))[0].id;
   const as = (method, path, b) => fetch(base + path, { method, headers: { 'content-type': 'application/json', cookie: `cwui_session=${makeSession(founder)}`, 'x-tenant-id': t.id }, body: b && JSON.stringify(b) });
   const tenant = await (await as('GET', '/tenant')).json();
-  assert.equal(tenant.plan.plan, 'free'); assert.equal(tenant.plan.maxFields, 3);
+  assert.equal(tenant.plan.plan, 'free'); assert.equal(tenant.plan.maxFields, 4);
   const f1 = await (await as('POST', '/facilities', { name: 'Main' })).json();
   assert.equal((await as('POST', '/facilities', { name: 'Second' })).status, 402);
-  for (const n of ['A', 'B', 'C']) assert.equal((await as('POST', '/spaces', { facilityId: f1.id, name: n })).status, 201);
+  for (const n of ['A', 'B', 'C', 'C2']) assert.equal((await as('POST', '/spaces', { facilityId: f1.id, name: n })).status, 201);
   const fourth = await as('POST', '/spaces', { facilityId: f1.id, name: 'D' });
-  assert.equal(fourth.status, 402); assert.match((await fourth.json()).error, /Free plan includes 3 fields/);
+  assert.equal(fourth.status, 402); assert.match((await fourth.json()).error, /Free plan includes 4 fields/);
   const a = (await q("select id from space where tenant_id = $1 and name = 'A'", [t.id]))[0].id;
   assert.equal((await as('POST', '/spaces', { facilityId: f1.id, parentId: a, name: 'A north' })).status, 201, 'sections do not count');
 
@@ -314,4 +316,28 @@ test('rename the group; remove a field with its sections and future bookings', a
   assert.ok(mails.slice(before).some((m) => /Old Pitch is no longer available/.test(m)));
   assert.equal((await call('DELETE', `/spaces/${f}`, admin)).status, 404, 'already removed');
   await call('PATCH', '/settings', admin, { name: 'Gap Group' });
+});
+
+test('price list and the owner console', async () => {
+  const { plans } = await (await fetch(`${base}/plans`)).json();
+  assert.deepEqual(plans.map((p) => [p.name, p.priceCents, p.annualCents, p.maxSites, p.maxFields, p.cardPayments]),
+    [['Free', 0, 0, 1, 4, false], ['Community', 2900, 29000, 3, 15, true], ['League', 7900, 79000, null, null, true]]);
+  const found = await q("select id from app_user where lower(email) = 'owner@cwui.test'");
+  const owner = found.length ? found[0].id : (await q("insert into app_user (email, full_name) values ('owner@cwui.test', 'Owner') returning id"))[0].id;
+  const as = (method, path, b) => fetch(base + path, { method, headers: { 'content-type': 'application/json', cookie: `cwui_session=${makeSession(owner)}` }, body: b && JSON.stringify(b) });
+  assert.equal((await (await as('GET', '/me')).json()).platformAdmin, true);
+  assert.equal((await json('GET', '/me', admin)).platformAdmin, false);
+  assert.equal((await call('GET', '/platform/tenants', admin)).status, 403, 'a group admin is not the owner');
+  const list = (await (await as('GET', '/platform/tenants')).json()).tenants;
+  const mine = list.find((t) => t.id === T);
+  assert.ok(mine && mine.fields >= 1 && /admin-/.test(mine.admins));
+  assert.equal((await as('PATCH', `/platform/tenants/${T}`, { plan: 'nope' })).status, 400);
+  assert.equal((await as('PATCH', `/platform/tenants/${T}`, { plan: 'pro' })).status, 200);
+  assert.equal((await q('select plan_code from tenant where id = $1', [T]))[0].plan_code, 'pro');
+  assert.equal((await as('POST', `/platform/tenants/${T}/join`)).status, 200);
+  assert.equal((await as('POST', `/platform/tenants/${T}/join`)).status, 200, 'joining twice is fine');
+  assert.equal((await q("select count(*)::int n from role_assignment where tenant_id = $1 and user_id = $2 and role = 'tenant_admin'", [T, owner]))[0].n, 1);
+  assert.ok((await q("select 1 from audit_log where tenant_id = $1 and action = 'platform.join'", [T])).length);
+  await q("delete from role_assignment where tenant_id = $1 and user_id = $2", [T, owner]);
+  await q("update tenant set plan_code = 'standard' where id = $1", [T]);
 });

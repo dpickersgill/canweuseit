@@ -144,7 +144,8 @@ function userMenu() {
   const theme = savedTheme();
   const t = (mode, label, ic) => ({ label: `${label}${theme === mode ? ' (on)' : ''}`, icon: ic, onSelect: () => { saveTheme(mode); render(); } });
   return menu('Your account', [{ head: `${name} · ${state.me.user.email}` }, { label: 'Your settings', icon: 'user', onSelect: () => go('profile') },
-    { label: 'Add to your calendar', icon: 'calendar', onSelect: () => go('calendar') }, 'sep',
+    { label: 'Add to your calendar', icon: 'calendar', onSelect: () => go('calendar') },
+    state.me.platformAdmin ? { label: 'Owner console', icon: 'layers', onSelect: () => go('platform') } : null, 'sep',
     t('system', 'Match my device', 'monitor'), t('light', 'Light', 'sun'), t('dark', 'Dark', 'moon'), 'sep',
     { label: 'Sign out', icon: 'log-out', onSelect: signOut }],
   { trigger: el('button', { type: 'button', class: 'avatar', 'aria-label': `Account menu for ${name}` }, initials) });
@@ -1191,6 +1192,32 @@ async function setupView() {
     el('div', { class: 'setup' }, el('nav', { class: 'setup-nav', 'aria-label': 'Setup sections' }, SETUP_TABS.map(tabBtn)), el('div', {}, page)));
 }
 
+/* ---------- Owner console: every group on CanWeUseIt (for the people who run it) ---------- */
+async function platformView() {
+  const [{ tenants }, { plans }] = await Promise.all([api('/platform/tenants'), api('/plans')]);
+  const price = Object.fromEntries(plans.map((p) => [p.code, p.priceCents]));
+  const byPlan = plans.map((p) => [p.name, tenants.filter((t) => t.plan_code === p.code).length]);
+  const monthly = tenants.reduce((a, t) => a + (price[t.plan_code] || 0), 0);
+  const open = (t) => guard(async () => {
+    await api(`/platform/tenants/${t.id}/join`, { method: 'POST' });
+    state.me = await (await fetch('/me')).json(); remember(t.id);
+    state.tenant = { id: t.id }; state.tenant = await api('/tenant'); await loadData(); state.view = 'schedule'; render();
+  });
+  return el('div', { class: 'stack' },
+    el('div', { class: 'head' }, el('div', {}, el('h2', {}, 'Owner console'), el('p', { class: 'page-sub small' }, 'Every group on CanWeUseIt. Only the emails in PLATFORM_ADMIN_EMAILS see this.'))),
+    el('div', { class: 'owner-stats' }, [['Groups', tenants.length], ...byPlan, ['Plan value a month', money(monthly)]].map(([l, v]) => el('div', { class: 'stat panel' }, el('b', {}, String(v)), el('span', { class: 'muted small' }, l)))),
+    tenants.length ? el('div', { class: 'panel table-wrap', role: 'region', 'aria-label': 'All groups', tabindex: '0' }, el('table', { class: 'tbl' },
+      el('thead', {}, el('tr', {}, ['Group', 'Plan', 'Sites', 'Fields', 'Clubs', 'Waiting', 'Admins', 'Started', ''].map((h) => el('th', { scope: 'col' }, h)))),
+      el('tbody', {}, tenants.map((t) => el('tr', {},
+        el('td', {}, el('b', {}, t.name), el('div', { class: 'muted small' }, t.slug)),
+        el('td', {}, el('select', { 'aria-label': `Plan for ${t.name}`, onchange: (e) => guard(async () => { await api(`/platform/tenants/${t.id}`, { method: 'PATCH', body: { plan: e.target.value } }); toast(`${t.name} is now on ${e.target.selectedOptions[0].textContent.split(',')[0]}`); render(); }) },
+          plans.map((p) => el('option', { value: p.code, selected: p.code === t.plan_code }, p.priceCents ? `${p.name}, ${money(p.priceCents)}/mo` : p.name)))),
+        el('td', {}, String(t.sites)), el('td', {}, String(t.fields)), el('td', {}, String(t.groups)), el('td', {}, String(t.pending)),
+        el('td', { class: 'small' }, t.admins || ''), el('td', { class: 'small' }, shortDate(t.created_at)),
+        el('td', {}, el('button', { class: 'btn alt small', onclick: () => open(t) }, 'Open'))))))) : emptyState('No groups yet', 'Groups appear here when someone signs up.'),
+    el('p', { class: 'muted small' }, 'Plan changes take effect at once. Billing for plans is by invoice for now; change the plan here after a group pays. Open adds you as an admin of that group, recorded in its activity log.'));
+}
+
 /* ---------- boot ---------- */
 async function loadData() {
   const [{ spaces }, { facilities }, { organizations }] = await Promise.all([api('/spaces'), api('/facilities'), api('/organizations')]);
@@ -1205,6 +1232,11 @@ async function render() {
   if (!state.me) { lastView = null; return $app.replaceChildren(loginScreen()); }
   if (!state.tenant) {
     const ids = [...new Set(state.me.memberships.map((m) => m.tenant_id))];
+    if (!ids.length && state.me.platformAdmin) { // the owner, before joining any group
+      const content = await platformView().catch((e) => el('p', { role: 'alert' }, e.message));
+      return $app.replaceChildren(el('div', { class: 'public-wrap', style: 'max-width:1180px' }, el('div', { class: 'row between' }, el('a', { class: 'public-brand', href: '/' }, brandMark(32), 'CanWeUseIt'),
+        el('button', { class: 'btn ghost small', onclick: signOut }, icon('log-out', { size: 16 }), 'Sign out')), el('main', { id: 'main' }, content)));
+    }
     if (!ids.length) return $app.replaceChildren(el('main', { class: 'public-wrap' }, el('a', { class: 'public-brand', href: '/' }, brandMark(32), 'CanWeUseIt'),
       emptyState('You are not part of a group yet', 'Ask your club, school or league admin to add you. Running the fields yourself? Start your own group.', el('a', { class: 'btn', href: '/signup' }, 'Start a group'))));
     const saved = remembered();
@@ -1212,7 +1244,7 @@ async function render() {
     state.tenant = await api('/tenant');
     await loadData();
   }
-  const views = { schedule: scheduleView, requests: requestsView, new: newRequestView, groups: groupsView, closures: closuresView, seasons: seasonsView, billing: billingView, profile: profileView, reports: reportsView, calendar: calendarView, setup: setupView };
+  const views = { platform: platformView, schedule: scheduleView, requests: requestsView, new: newRequestView, groups: groupsView, closures: closuresView, seasons: seasonsView, billing: billingView, profile: profileView, reports: reportsView, calendar: calendarView, setup: setupView };
   const seq = ++renderSeq;
   document.querySelectorAll('dialog[open]').forEach((d) => d.close());
   const entering = state.view !== lastView;

@@ -30,7 +30,7 @@ const plusDays = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(
 before(async () => {
   await owner.connect();
   slug = `sc-${rnd()}`;
-  T = (await q("insert into tenant (name, slug, latitude, longitude) values ('Scale Group', $1, 39.95, -75.17) returning id", [slug]))[0].id;
+  T = (await q("insert into tenant (name, slug, latitude, longitude, plan_code) values ('Scale Group', $1, 39.95, -75.17, 'pro') returning id", [slug]))[0].id;
   const user = async (label, role, orgId, facilityId) => {
     const id = (await q('insert into app_user (email, full_name) values ($1,$2) returning id', [`${label}-${rnd()}@example.com`, label]))[0].id;
     await q('insert into role_assignment (tenant_id, user_id, role, organization_id, facility_id) values ($1,$2,$3,$4,$5)', [T, id, role, orgId || null, facilityId || null]);

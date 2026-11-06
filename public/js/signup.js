@@ -22,3 +22,17 @@ $('f').addEventListener('submit', async (e) => {
   if (!res.ok) { $('msg').className = 'notice'; $('msg').textContent = out.error || 'Something went wrong'; return; }
   $('f').replaceChildren(Object.assign(document.createElement('div'), { className: 'okbox', textContent: `${out.message} It can take a minute to arrive.` }));
 });
+
+// the price list, from the server so it always matches
+fetch('/plans').then((r) => r.json()).then(({ plans }) => {
+  const box = document.getElementById('plans');
+  const money = (c) => `$${(c / 100).toLocaleString('en-US')}`;
+  for (const p of plans) {
+    const card = document.createElement('div'); card.className = 'plan-card';
+    const h = document.createElement('b'); h.textContent = p.name;
+    const pr = document.createElement('p'); pr.className = 'price'; pr.textContent = p.priceCents ? `${money(p.priceCents)} a month` : 'Free';
+    const yr = document.createElement('p'); yr.className = 'muted small'; yr.textContent = p.priceCents ? `or ${money(p.annualCents)} a year` : 'No card needed';
+    const bl = document.createElement('p'); bl.className = 'small'; bl.textContent = p.blurb || '';
+    card.append(h, pr, yr, bl); box.append(card);
+  }
+}).catch(() => {});
