@@ -205,7 +205,7 @@ requestsRouter.get('/requests', async (req, res, next) => {
                 (select json_build_object('number', p.number, 'code', p.code) from permit p where p.request_id = r.id and p.revoked_at is null limit 1) as permit,
                 json_agg(json_build_object(
                   'id', bd.id, 'startsAt', bd.starts_at, 'endsAt', bd.ends_at, 'status', bd.status, 'warning', bd.warning,
-                  'spaceId', bd.space_id, 'space', ds.name, 'label', bd.label,
+                  'spaceId', bd.space_id, 'space', ds.name, 'label', bd.label, 'noShow', bd.no_show, 'releasedMinutes', bd.released_minutes,
                   'conflict', bd.status in ('pending','flagged') and exists (
                      select 1 from affected_spaces(bd.space_id) a join blocked_slot b on b.space_id = a.space_id
                       where b.during && tstzrange(bd.starts_at, bd.ends_at, '[)') and (b.is_claim or a.is_claim))

@@ -1,4 +1,5 @@
 // Seasons, billing, applications, activity: the views added for larger facilities.
+import { payButton, refundBox } from './gaps.js';
 import { el, api, state, toast, guard, render, go, section, field, cap, dayLabel, hhmm, ymd, isAdmin, isStaff, myOrgIds, canManageOrg, parseTable } from './app.js';
 
 export const money = (c) => `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -75,7 +76,7 @@ export async function seasonsView() {
 /* ---------- Billing ---------- */
 export async function billingView() {
   const staff = isStaff(), admin = isAdmin();
-  const [{ invoices }, rates] = await Promise.all([api('/invoices'), staff ? api('/fee-rates') : { rates: [] }]);
+  const [{ invoices, payOnline }, rates] = await Promise.all([api('/invoices'), staff ? api('/fee-rates') : { rates: [] }]);
   const wrap = el('div', { class: 'stack' }, el('div', { class: 'head' }, el('h2', {}, staff ? 'Fees and invoices' : 'Your invoices'),
     staff ? el('button', { class: 'btn alt small', onclick: () => guard(() => download('/export/invoices.csv', 'invoices.csv')) }, 'Download CSV') : null));
   const open = invoices.filter((i) => i.status === 'open');
@@ -84,12 +85,15 @@ export async function billingView() {
     const host = el('div', {});
     const method = el('input', { type: 'text', placeholder: 'Check, cash, transfer', 'aria-label': 'How it was paid' }), ref = el('input', { type: 'text', placeholder: 'Reference', 'aria-label': 'Reference' });
     return el('article', { class: 'item' },
-      el('div', { class: 'card-head' }, el('div', {}, el('b', {}, `${i.number}, ${i.organization}`), el('p', { class: 'muted small' }, `${money(i.amountCents)}, due ${i.dueOn}${i.paidAt ? `, paid ${dayLabel(i.paidAt)}${i.paidMethod ? ` by ${i.paidMethod}` : ''}` : ''}`)),
-        el('span', { class: 'badge ' + (i.status === 'paid' ? 'confirmed' : i.status === 'void' ? 'cancelled' : (i.dueOn < ymd(new Date()) ? 'conflict' : 'pending')) }, i.status === 'open' && i.dueOn < ymd(new Date()) ? 'Overdue' : cap(i.status))),
+      el('div', { class: 'card-head' }, el('div', {}, el('b', {}, `${i.number}${i.kind === 'deposit' ? ' (deposit)' : ''}, ${i.organization}`), el('p', { class: 'muted small' }, `${money(i.amountCents)}, due ${i.dueOn}${i.paidAt ? `, paid ${dayLabel(i.paidAt)}${i.paidMethod ? ` by ${i.paidMethod}` : ''}` : ''}${i.refundedCents ? `, ${money(i.refundedCents)} refunded` : ''}`)),
+        el('span', { class: 'badge ' + (i.status === 'paid' ? 'confirmed' : ['void', 'refunded'].includes(i.status) ? 'cancelled' : (i.dueOn < ymd(new Date()) ? 'conflict' : 'pending')) }, i.status === 'open' && i.dueOn < ymd(new Date()) ? 'Overdue' : cap(i.status))),
       el('ul', { class: 'plain small' }, (i.lines || []).map((l) => el('li', { class: 'row between' }, el('span', {}, l.description), el('span', {}, money(l.amountCents))))),
+      !staff && i.status === 'open' && payOnline ? el('div', { class: 'actions' }, payButton(i)) : null,
+      staff && i.status === 'paid' ? el('div', { class: 'actions' }, el('button', { class: 'btn alt small', onclick: () => { const on = host.dataset.k === 'r'; host.dataset.k = on ? '' : 'r'; host.replaceChildren(...(on ? [] : [refundBox(i)])); } }, 'Refund')) : null,
       staff && i.status === 'open' ? el('div', { class: 'actions' },
-        el('button', { class: 'btn small', onclick: () => host.replaceChildren(host.firstChild ? [] : el('div', { class: 'inline-form' }, method, ref, el('button', { class: 'btn small', onclick: () => guard(async () => {
-          await api(`/invoices/${i.id}/pay`, { method: 'POST', body: { method: method.value, reference: ref.value } }); toast('Marked paid'); render(); }) }, 'Save'))) }, 'Mark paid'),
+        payOnline ? payButton(i) : null,
+        el('button', { class: 'btn small', onclick: () => host.replaceChildren(...(host.childElementCount ? [] : [el('div', { class: 'inline-form' }, method, ref, el('button', { class: 'btn small', onclick: () => guard(async () => {
+          await api(`/invoices/${i.id}/pay`, { method: 'POST', body: { method: method.value, reference: ref.value } }); toast('Marked paid'); render(); }) }, 'Save'))])) }, 'Mark paid'),
         el('button', { class: 'btn danger small', onclick: () => guard(async () => { if (!confirm('Void this invoice?')) return; await api(`/invoices/${i.id}/void`, { method: 'POST' }); render(); }) }, 'Void')) : null, host);
   })) : el('p', { class: 'muted' }, staff ? 'No invoices yet. Open an approved request and choose Invoice.' : 'Nothing billed.')));
   if (staff) wrap.append(feeRates(rates.rates, admin));

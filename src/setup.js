@@ -17,7 +17,7 @@ setupRouter.get('/tenant', async (req, res, next) => {
   try {
     const row = await withTenant(req.tenantId, async (c) =>
       ({ ...(await c.query('select id, name, slug, timezone, daylight_rule as "daylightRule", latitude::float, longitude::float from tenant where id = $1', [req.tenantId])).rows[0], plan: await planUsage(c, req.tenantId) }));
-    res.json({ ...row, roles: req.roles, map: config.map });
+    res.json({ ...row, roles: req.roles, map: config.map, contact: config.legal.contact });
   } catch (err) { next(err); }
 });
 

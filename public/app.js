@@ -1,5 +1,6 @@
 // CanWeUseIt web app. No build step; all text goes through el() so nothing user-supplied is ever parsed as HTML.
 import { seasonsView, billingView, applicationsPanel, activityPanel, invoiceBox, download, money } from './more.js';
+import { mapPicker, mapEditor, hasMap, teamPlanBox, releaseBox, noShowButton, teamsPanel, paymentsPanel, planPanel, utilizationPanel, profileView } from './gaps.js';
 const $app = document.getElementById('app');
 const state = { me: null, tenants: [], tenant: null, view: 'schedule', spaces: [], orgs: [], weekStart: null, month: null, calMode: 'month', selectedDay: null, prefill: null, compliance: [], report: null, spaceFilter: '', rq: null };
 
@@ -86,9 +87,20 @@ function loginScreen() {
     el('button', { class: 'btn', type: 'submit' }, 'Email me a sign-in link'), msg);
   return el('div', { class: 'login' }, el('div', { class: 'login-top' }),
     el('div', { class: 'login-in stack' }, el('h1', {}, 'CanWeUseIt'),
-      el('p', { class: 'muted' }, 'Request field time and see what has been approved. Sign in with a link sent to your email, no password needed.'), form));
+      el('p', { class: 'muted' }, 'Request field time and see what has been approved. Sign in with a link sent to your email, no password needed.'), form,
+      el('p', { class: 'small' }, 'Run the fields for a league, district or town? ', el('a', { href: '/signup' }, 'Start your group free')), legalLinks()));
 }
 
+const legalLinks = () => el('p', { class: 'legal-links small' }, el('a', { href: '/privacy' }, 'Privacy'), ' · ', el('a', { href: '/terms' }, 'Terms'), ' · ', el('a', { href: '/accessibility' }, 'Accessibility'));
+const remember = (id) => { try { localStorage.setItem('cwui-tenant', id); } catch { /* private window */ } };
+const remembered = () => { try { return localStorage.getItem('cwui-tenant'); } catch { return null; } };
+function switcher() {
+  const list = state.me.tenants || [];
+  if (list.length < 2) return el('h1', {}, state.tenant.name);
+  return el('div', { class: 'switch' }, el('label', { for: 'tenant-pick', class: 'sr-only' }, 'Group'),
+    el('select', { id: 'tenant-pick', onchange: (e) => guard(async () => { remember(e.target.value); state.tenant = { id: e.target.value }; state.tenant = await api('/tenant'); state.view = 'schedule'; state.rq = null; await loadData(); render(); }) },
+      list.map((t) => el('option', { value: t.id, selected: t.id === state.tenant.id }, t.name))));
+}
 function shell(content) {
   const tabs = [['schedule', 'Schedule'], ['requests', 'Requests'], ['new', 'Request time']];
   if (isStaff() || orgAdminIds().length) tabs.push(['groups', 'Groups']);
@@ -99,12 +111,12 @@ function shell(content) {
   if (isAdmin()) tabs.push(['setup', 'Setup']);
   return el('div', {},
     el('header', { class: 'bar' }, el('div', { class: 'bar-in' },
-      el('div', { class: 'bar-top' }, el('h1', {}, state.tenant.name),
-        el('div', { class: 'who' }, state.me.user.full_name,
+      el('div', { class: 'bar-top' }, switcher(),
+        el('div', { class: 'who' }, el('button', { class: 'linkbtn', onclick: () => go('profile'), 'aria-current': state.view === 'profile' ? 'page' : null }, state.me.user.full_name),
           el('button', { class: 'linkbtn', onclick: async () => { await fetch('/auth/logout', { method: 'POST' }); state.me = null; state.tenant = null; render(); } }, 'Sign out'))),
       el('nav', { class: 'tabs', 'aria-label': 'Main' }, tabs.map(([id, label]) =>
         el('button', { 'aria-current': state.view === id ? 'page' : null, onclick: () => go(id) }, label))))),
-    el('main', {}, content));
+    el('main', { id: 'main' }, content), el('footer', { class: 'foot' }, legalLinks()));
 }
 function go(view) { state.view = view; render(); }
 
@@ -121,7 +133,15 @@ const canManageOrg = (orgId) => isStaff() || orgAdminIds().includes(orgId);
 
 function statusBadge(status) { return el('span', { class: 'badge ' + status }, cap(status)); }
 function section(title, ...kids) { return el('section', { class: 'panel stack' }, el('h3', {}, title), ...kids); }
-function field(label, input, hint) { return el('div', { class: 'field' }, el('label', {}, label), input, hint ? el('p', { class: 'muted small' }, hint) : null); }
+let fieldSeq = 0;
+// A labelled control. The label points at the control (or the first control inside a group) so screen readers announce it.
+function field(label, input, hint) {
+  const ctl = input.matches?.('input,select,textarea') ? input : input.querySelector?.('input,select,textarea');
+  const hintId = hint ? `hint-${++fieldSeq}` : null;
+  if (ctl && !ctl.id) ctl.id = `f-${++fieldSeq}`;
+  if (ctl && hintId) ctl.setAttribute('aria-describedby', hintId);
+  return el('div', { class: 'field' }, el('label', ctl ? { for: ctl.id } : {}, label), input, hint ? el('p', { class: 'muted small', id: hintId }, hint) : null);
+}
 
 /* a small inline form: time and place for a date (used to move a booking) */
 function moveForm(d, done) {
@@ -147,8 +167,9 @@ const monthStartOf = (d) => `${d.slice(0, 7)}-01`;
 const shiftMonth = (first, k) => { const [y, m] = first.split('-').map(Number); const d = new Date(Date.UTC(y, m - 1 + k, 1)); return d.toISOString().slice(0, 10); };
 
 function chip(b) {
-  return el('button', { type: 'button', class: 'chip-b' + (b.status === 'pending' ? ' pending' : ''), style: `background:${tint(b.organizationId)}`,
-    title: `${b.organization}: ${b.title} (${b.space})`, onclick: (e) => { e.stopPropagation(); selectDay(ymd(b.startsAt)); } },
+  // plain text inside the day cell: the cell itself is the control (a button inside a button confuses screen readers)
+  return el('span', { class: 'chip-b' + (b.status === 'pending' ? ' pending' : ''), style: `background:${tint(b.organizationId)}`,
+    title: `${b.organization}: ${b.title} (${b.space})` },
   `${hhmm(b.startsAt).replace(/^0/, '')} ${b.organization}`);
 }
 function selectDay(d) { state.selectedDay = d; render().then(() => document.getElementById('day-panel')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })); }
@@ -307,7 +328,13 @@ function datesList(r) {
           el('button', { class: 'btn danger small', onclick: () => guard(async () => {
             if (!confirm('Skip this date?')) return;
             await api(`/booking-dates/${d.id}/cancel`, { method: 'POST', body: {} }); toast('Date skipped'); render();
-          }) }, 'Skip')) : null, moveHost);
+          }) }, 'Skip')) : null,
+        d.status === 'confirmed' ? el('span', { class: 'row' },
+          el('button', { class: 'btn alt small', onclick: () => { const on = moveHost.dataset.k === 't'; moveHost.dataset.k = on ? '' : 't'; moveHost.replaceChildren(...(on ? [] : [teamPlanBox(d)])); } }, 'Teams'),
+          canManage && isFuture(d.startsAt) ? el('button', { class: 'btn alt small', onclick: () => { const on = moveHost.dataset.k === 'g'; moveHost.dataset.k = on ? '' : 'g'; moveHost.replaceChildren(...(on ? [] : [releaseBox(d)])); } }, 'Give back time') : null,
+          canClose() && !isFuture(d.startsAt) ? noShowButton(d) : null) : null,
+        d.noShow ? el('span', { class: 'badge conflict' }, 'No-show') : null,
+        d.releasedMinutes ? el('span', { class: 'muted small' }, `${d.releasedMinutes} min given back`) : null, moveHost);
     }));
     if (all.length > limit) box.append(el('li', {}, el('button', { class: 'linkbtn', onclick: () => draw(999) }, `Show all ${all.length} dates`)));
   };
@@ -467,8 +494,12 @@ async function newRequestView() {
     itemsHost.replaceChildren(...f.items.map((it, i) => {
       const label = el('input', { type: 'text', maxlength: 80, placeholder: 'Team, for example U12 girls', value: it.label, 'aria-label': 'Team', oninput: (e) => { it.label = e.target.value; } });
       const picker = el('div', {});
-      const draw = () => picker.replaceChildren(i === 0
-        ? pitchPicker(state.spaces, { selected: it.spaceId, onSelect: (sp) => { it.spaceId = sp.id; draw(); describe(); } })
+      const pick = (sp) => { it.spaceId = sp.id; draw(); describe(); };
+      const views = () => i === 0 && hasMap() ? el('div', { class: 'chips', role: 'group', 'aria-label': 'Show fields as' },
+        [['diagram', 'Diagram'], ['map', 'Satellite map']].map(([v, l]) => el('button', { type: 'button', class: 'chip', 'aria-pressed': String((f.look || 'diagram') === v), onclick: () => { f.look = v; draw(); } }, l))) : null;
+      const draw = () => picker.replaceChildren(...(views() ? [views()] : []), i === 0
+        ? (f.look === 'map' ? el('div', { class: 'stack' }, mapPicker({ selected: it.spaceId, onSelect: pick }), el('p', { class: 'muted small', role: 'status' }, it.spaceId ? `Chosen: ${spaceName(it.spaceId)}` : 'Tap a field or a section on the map.'))
+          : pitchPicker(state.spaces, { selected: it.spaceId, onSelect: pick }))
         : el('select', { 'aria-label': 'Field', onchange: (e) => { it.spaceId = e.target.value; } }, el('option', { value: '' }, 'Choose a field'), state.spaces.map((sp) => el('option', { value: sp.id, selected: sp.id === it.spaceId }, `${sp.parent_id ? 'Section: ' : ''}${sp.name}`))));
       draw();
       const t1 = el('input', { type: 'time', value: it.start, 'aria-label': 'Different start', oninput: (e) => { it.start = e.target.value; } }), t2 = el('input', { type: 'time', value: it.end, 'aria-label': 'Different end', oninput: (e) => { it.end = e.target.value; } });
@@ -597,7 +628,9 @@ async function groupsView() {
         isAdmin() && info ? el('label', { class: 'row inline-check' }, el('input', { type: 'checkbox', checked: info.autoApprove, onchange: (e) => guard(async () => {
           await api(`/organizations/${o.id}`, { method: 'PATCH', body: { autoApprove: e.target.checked } }); toast(e.target.checked ? 'Trusted: auto-approve on' : 'Auto-approve off');
         }) }), 'Trusted') : null)), body));
-    body.append(host); load();
+    body.append(host);
+    if (isStaff() || myOrgIds().includes(o.id)) body.append(teamsPanel(o, isAdmin() || orgAdminIds().includes(o.id)));
+    load();
   }
   if (!status.length) wrap.append(el('div', { class: 'panel empty-big' }, el('p', { class: 'muted' }, 'No groups yet.')));
   return wrap;
@@ -655,7 +688,7 @@ async function reportsView() {
       el('button', { class: 'btn small', onclick: () => { state.report = { from: from.value, to: to.value }; render(); } }, 'Show')),
     el('div', { class: 'stats' }, [['Hours booked', data.totalHours], ['Waiting', data.pending], ['Cancelled dates', data.cancelled], ['Conflicts', data.conflicts]].map(([l, v]) =>
       el('div', { class: 'stat panel' }, el('b', {}, String(v)), el('span', { class: 'muted small' }, l)))),
-    section('By field', table(data.bySpace, 'Field')), section('By group', table(data.byOrg, 'Group')), activity);
+    section('By field', table(data.bySpace, 'Field')), section('By group', table(data.byOrg, 'Group')), await utilizationPanel(state.report.from, state.report.to), activity);
 }
 
 /* ---------- Add to your calendar ---------- */
@@ -740,9 +773,12 @@ async function rulesPanel() {
   const minCov = el('input', { type: 'number', min: '0', step: '1000', value: s.minCoverage ?? '', placeholder: 'No minimum', 'aria-label': 'Minimum coverage' });
   const addl = el('input', { type: 'checkbox', id: 'addl', checked: !!s.requireAdditionalInsured });
   const hold = el('input', { type: 'checkbox', id: 'hold', checked: !!s.holdUnpaid });
+  const minUse = el('input', { type: 'number', min: '1', max: '100', value: s.minUsePct ?? '', placeholder: 'Off', 'aria-label': 'Minimum use percent' });
+  const noShows = el('input', { type: 'number', min: '1', max: '50', value: s.noShowLimit ?? '', placeholder: 'Off', 'aria-label': 'No-shows allowed per year' });
   const save = el('button', { class: 'btn', onclick: () => guard(async () => {
     await api('/settings', { method: 'PATCH', body: { timezone: zone.value, latitude: num(lat.value), longitude: num(lon.value), daylightRule: dl.value, insuranceRule: ins.value,
-      cancelNoticeHours: Number(notice.value || 0), minCoverage: num(minCov.value), requireAdditionalInsured: addl.checked, holdUnpaid: hold.checked } });
+      cancelNoticeHours: Number(notice.value || 0), minCoverage: num(minCov.value), requireAdditionalInsured: addl.checked, holdUnpaid: hold.checked,
+      minUsePct: num(minUse.value), noShowLimit: num(noShows.value) } });
     state.tenant = await api('/tenant'); state.tenant.daylightRule = dl.value; toast('Saved');
   }) }, 'Save rules');
 
@@ -764,7 +800,9 @@ async function rulesPanel() {
       field('Minimum insurance coverage, in dollars', minCov, 'Checked when the rule above is on'),
       el('label', { for: 'addl', class: 'row', style: 'font-weight:500' }, addl, 'Group must be named as additional insured'),
       field('Cancelling inside this many hours counts as a late cancellation', notice, 'Staff are told and it shows in the usage download. 0 turns it off.'),
-      el('label', { for: 'hold', class: 'row', style: 'font-weight:500' }, hold, 'Hold new requests from groups with an overdue invoice'), save),
+      el('label', { for: 'hold', class: 'row', style: 'font-weight:500' }, hold, 'Hold new requests from groups with an overdue invoice'),
+      el('h4', {}, 'Use it or lose it'),
+      el('div', { class: 'grid2' }, field('No-shows allowed in a year', noShows, 'Groups over this are placed last in the next season.'), field('Minimum share of given time a group must use (%)', minUse, 'Groups below it are flagged under Usage.')), save),
     section('Bookable hours', hours.length ? el('ul', { class: 'plain' }, hours.map((x) => el('li', { class: 'row between' }, el('span', {}, hs(x)),
       el('button', { class: 'btn danger small', onclick: () => guard(async () => { await api(`/hours/${x.id}`, { method: 'DELETE' }); render(); }) }, 'Remove')))) : el('p', { class: 'muted small' }, 'No limits. Add hours to stop late-night bookings.'),
       field('Applies to', hSpace), field('Days', dayChips), el('div', { class: 'grid2' }, field('Opens', opens), field('Closes', closes)), field('If outside these hours', enf), hNote,
@@ -795,7 +833,8 @@ async function setupView() {
   const sRole = el('select', { 'aria-label': 'Staff role', onchange: () => { sSite.classList.toggle('hidden', sRole.value === 'tenant_admin'); } }, el('option', { value: 'approver' }, 'Approver'), el('option', { value: 'grounds' }, 'Groundskeeper (closes fields)'), el('option', { value: 'tenant_admin' }, 'Admin'));
   const sSite = el('select', { 'aria-label': 'Which site' }, el('option', { value: '' }, 'All sites'), facilities.map((f) => el('option', { value: f.id }, `Only ${f.name}`)));
 
-  return el('div', { class: 'stack' }, el('div', { class: 'head' }, el('h2', {}, 'Setup')),
+  const money_ = await paymentsPanel().catch(() => null);
+  return el('div', { class: 'stack' }, el('div', { class: 'head' }, el('h2', {}, 'Setup')), planPanel(), money_,
     section('Fields and sections',
       state.spaces.length ? pitchPicker(state.spaces, {}) : el('p', { class: 'muted' }, 'No fields yet. Add a facility, then its fields.'),
       el('div', { class: 'row' }, facName, el('button', { class: 'btn alt', onclick: () => facName.value && post('/facilities', { name: facName.value }, 'Facility added') }, 'Add facility')),
@@ -814,7 +853,7 @@ async function setupView() {
       el('div', { class: 'grid2' }, sName, sEmail), el('div', { class: 'grid2' }, sRole, sSite),
       el('p', { class: 'muted small' }, 'Limit an approver to one site and they only see and decide requests there. A groundskeeper can close fields but not approve. A groundskeeper must be tied to a site.'),
       el('button', { class: 'btn alt', onclick: () => post('/staff', { fullName: sName.value, email: sEmail.value, role: sRole.value, ...(sSite.value && sRole.value !== 'tenant_admin' ? { facilityId: sSite.value } : {}) }, 'Invitation sent') }, 'Add')),
-    await rulesPanel(), importPanel());
+    await rulesPanel(), importPanel(), mapEditor());
 }
 
 /* ---------- boot ---------- */
@@ -831,14 +870,21 @@ async function render() {
   if (!state.tenant) {
     const ids = [...new Set(state.me.memberships.map((m) => m.tenant_id))];
     if (!ids.length) return $app.replaceChildren(el('main', {}, el('p', {}, 'Your email is not part of any group yet. Ask a group admin to add you.')));
-    state.tenant = { id: ids[0] }; // multiple groups: first one for now
+    const saved = remembered();
+    state.tenant = { id: ids.includes(saved) ? saved : ids[0] };
     state.tenant = await api('/tenant');
     await loadData();
   }
-  const views = { schedule: scheduleView, requests: requestsView, new: newRequestView, groups: groupsView, closures: closuresView, seasons: seasonsView, billing: billingView, reports: reportsView, calendar: calendarView, setup: setupView };
+  const views = { schedule: scheduleView, requests: requestsView, new: newRequestView, groups: groupsView, closures: closuresView, seasons: seasonsView, billing: billingView, profile: profileView, reports: reportsView, calendar: calendarView, setup: setupView };
   let content;
   try { content = await views[state.view](); } catch (e) { content = el('p', { role: 'alert' }, e.message); }
   $app.replaceChildren(shell(content));
+}
+const params = new URLSearchParams(location.search);
+if (params.has('paid') || params.has('stripe')) {
+  if (location.hash === '#billing') state.view = 'billing'; else if (location.hash === '#setup') state.view = 'setup';
+  history.replaceState(null, '', '/');
+  setTimeout(() => toast(params.has('paid') ? 'Payment received. Thank you.' : 'Back from Stripe.'), 600);
 }
 render();
 
