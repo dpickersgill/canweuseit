@@ -9,7 +9,7 @@ const hash = (t) => crypto.createHash('sha256').update(t).digest('hex');
 // ---- public feed: the secret in the address is the credential (calendar apps can't sign in) ----
 export const calendarPublic = Router();
 
-const esc = (s) => String(s ?? '').replace(/\\/g, '\\\\').replace(/;/g, '\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+const esc = (s) => String(s ?? '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
 const stamp = (d) => new Date(d).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 function fold(line) { // lines longer than 75 bytes are continued on the next line with a leading space
   const out = []; let cur = '', bytes = 0;

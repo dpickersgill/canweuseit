@@ -201,7 +201,7 @@ test('calendar feed: private link, valid iCalendar, only confirmed bookings', as
 test('import: preview first, then create; reports add up', async () => {
   const preview = await json('POST', '/import/spaces', admin, { preview: true, rows: [{ facility: 'North Complex', field: 'Pitch A', section: 'North half', lights: 'yes' }, { facility: 'North Complex', field: 'Pitch A', section: 'South half' }, { field: 'no facility' }] });
   assert.deepEqual([preview.preview, preview.created.facilities, preview.created.spaces, preview.errors.length], [true, 1, 3, 1]);
-  assert.equal((await q("select count(*)::int n from facility where name = 'North Complex'"))[0].n, 0);
+  assert.equal((await q("select count(*)::int n from facility where name = 'North Complex' and tenant_id = $1", [T]))[0].n, 0);
   const real = await json('POST', '/import/spaces', admin, { rows: [{ facility: 'North Complex', field: 'Pitch A', section: 'North half', lights: 'yes' }, { facility: 'North Complex', field: 'Pitch A', section: 'South half' }] });
   assert.equal(real.created.spaces, 3);
   assert.equal((await json('POST', '/import/spaces', admin, { rows: [{ facility: 'North Complex', field: 'Pitch A', section: 'North half' }] })).created.spaces, 0); // idempotent
@@ -218,7 +218,7 @@ test('import: preview first, then create; reports add up', async () => {
   ];
   const pv = await json('POST', '/import/bookings', admin, { preview: true, rows });
   assert.deepEqual([pv.created.requests, pv.created.confirmed, pv.created.conflicts, pv.errors.length], [2, 2, 1, 1]);
-  assert.equal((await q("select count(*)::int n from request where title = 'U10'"))[0].n, 0);
+  assert.equal((await q("select count(*)::int n from request where title = 'U10' and tenant_id = $1", [T]))[0].n, 0);
   await json('POST', '/import/bookings', admin, { rows });
 
   const rep = await json('GET', '/reports/usage?from=2028-09-01&to=2028-09-30', approver);
