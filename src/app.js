@@ -93,7 +93,7 @@ export function buildApp() {
   app.get('/spaces', requireUser, requireTenant, async (req, res, next) => {
     try {
       const rows = await withTenant(req.tenantId, async (c) =>
-        (await c.query('select id, facility_id, parent_id, name, kind, has_lights, buffer_minutes, outline from space where active order by name')).rows);
+        (await c.query('select id, facility_id, parent_id, name, kind, has_lights, buffer_minutes, outline, indoor, capacity from space where active order by name')).rows);
       res.json({ spaces: rows });
     } catch (err) { next(err); }
   });

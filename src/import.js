@@ -3,6 +3,7 @@ import { withTenant } from './db.js';
 import { requireUser, requireTenant, hasRole } from './tenant.js';
 import { isDate, isTime, localToUtc } from './time.js';
 import { decideRequest } from './requests.js';
+import { kindFromText, defaultIndoor } from '../public/kinds.js';
 
 export const importRouter = Router();
 importRouter.use('/import', requireUser, requireTenant, (req, res, next) =>
@@ -33,22 +34,33 @@ async function run(req, res, next, work) {
   } catch (err) { next(err); }
 }
 
-// Columns: facility, field, section (optional), lights (optional)
+// Columns: facility, space (or field), section, type, capacity, indoor, lights. Only facility and space are required.
+// type is a kind like Field, Pavilion, Gym or Classroom (blank means Field).
 importRouter.post('/import/spaces', (req, res, next) => run(req, res, next, async (c, rows) => {
   const errors = []; let facilities = 0, spaces = 0;
   const fac = new Map((await c.query('select id, name from facility')).rows.map((f) => [key(f.name), f.id]));
   const sp = new Map((await c.query('select id, facility_id, parent_id, name from space')).rows.map((s) => [`${s.facility_id}|${s.parent_id || ''}|${key(s.name)}`, s.id]));
   for (const [i, r] of rows.entries()) {
-    const facility = text(r.facility), field = text(r.field), section = text(r.section);
-    if (!facility || !field) { errors.push({ row: i + 1, message: 'facility and field are required' }); continue; }
+    const facility = text(r.facility), field = text(r.space ?? r.field), section = text(r.section);
+    if (!facility || !field) { errors.push({ row: i + 1, message: 'facility and space are required' }); continue; }
     if (facility.length > 120 || field.length > 120 || section.length > 120) { errors.push({ row: i + 1, message: 'Names must be 120 characters or fewer' }); continue; }
+    const kind = kindFromText(r.type ?? r.kind);
+    if (!kind) { errors.push({ row: i + 1, message: `Unknown type "${text(r.type ?? r.kind)}". Try Field, Court, Pavilion, Gym, Classroom or Multi-purpose room` }); continue; }
+    const capText = text(r.capacity), capacity = capText ? Number(capText.replace(/,/g, '')) : null;
+    if (capText && !(Number.isInteger(capacity) && capacity >= 1 && capacity <= 100000)) { errors.push({ row: i + 1, message: 'capacity must be a whole number' }); continue; }
+    const indoor = text(r.indoor) ? yes(r.indoor) || key(r.indoor) === 'indoor' : defaultIndoor(kind);
     let fid = fac.get(key(facility));
     if (!fid) { fid = (await c.query('insert into facility (tenant_id, name) values ($1,$2) returning id', [req.tenantId, facility])).rows[0].id; fac.set(key(facility), fid); facilities++; }
-    const lights = yes(r.lights);
+    const lights = !indoor && yes(r.lights);
     let pid = sp.get(`${fid}||${key(field)}`);
-    if (!pid) { pid = (await c.query('insert into space (tenant_id, facility_id, name, has_lights) values ($1,$2,$3,$4) returning id', [req.tenantId, fid, field, !section && lights])).rows[0].id; sp.set(`${fid}||${key(field)}`, pid); spaces++; }
+    if (!pid) {
+      pid = (await c.query('insert into space (tenant_id, facility_id, name, has_lights, kind, indoor, capacity) values ($1,$2,$3,$4,$5,$6,$7) returning id',
+        [req.tenantId, fid, field, !section && lights, kind, indoor, section ? null : capacity])).rows[0].id;
+      sp.set(`${fid}||${key(field)}`, pid); spaces++;
+    }
     if (section && !sp.get(`${fid}|${pid}|${key(section)}`)) {
-      sp.set(`${fid}|${pid}|${key(section)}`, (await c.query('insert into space (tenant_id, facility_id, parent_id, name, has_lights) values ($1,$2,$3,$4,$5) returning id', [req.tenantId, fid, pid, section, lights])).rows[0].id); spaces++;
+      sp.set(`${fid}|${pid}|${key(section)}`, (await c.query('insert into space (tenant_id, facility_id, parent_id, name, has_lights, kind, indoor, capacity) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id',
+        [req.tenantId, fid, pid, section, lights, kind, indoor, capacity])).rows[0].id); spaces++;
     }
   }
   return { created: { facilities, spaces }, errors };

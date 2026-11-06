@@ -228,3 +228,65 @@ test('import: preview first, then create; reports add up', async () => {
   assert.equal((await call('GET', '/reports/usage?from=2028-09-01&to=2028-09-30', coach)).status, 403);
   assert.equal((await call('GET', '/reports/usage?from=bad&to=2028-09-30', approver)).status, 400);
 });
+
+test('more than fields: pavilions, gyms and classrooms with capacity, indoor rooms skip the sunset rule, rates by type, import by type', async () => {
+  const [{ id: facId }] = await q('select id from facility where tenant_id = $1 limit 1', [T]);
+  const add = async (b) => { const r = await call('POST', '/spaces', admin, { facilityId: facId, ...b }); return { status: r.status, body: await r.json() }; };
+  const pav = await add({ name: 'Main pavilion', kind: 'pavilion', capacity: 120 });
+  assert.equal(pav.status, 201); assert.deepEqual([pav.body.kind, pav.body.indoor, pav.body.capacity], ['pavilion', false, 120]);
+  const room = await add({ name: 'Room 104', kind: 'classroom', capacity: 30, hasLights: true });
+  assert.deepEqual([room.body.indoor, room.body.has_lights], [true, false], 'classrooms are indoors; lights do not apply');
+  const court = await add({ name: 'Court 1', kind: 'court', indoor: true });
+  assert.equal(court.body.indoor, true, 'a court can be indoors');
+  const half = await add({ name: 'Court 1 east', parentId: court.body.id });
+  assert.deepEqual([half.body.kind, half.body.indoor], ['court', true], 'sections take after their parent');
+  assert.equal((await add({ name: 'Bad', kind: 'spaceship' })).status, 400);
+  assert.equal((await add({ name: 'Bad', kind: 'gym', capacity: 0 })).status, 400);
+  const listed = (await json('GET', '/spaces', coach)).spaces.find((s) => s.id === room.body.id);
+  assert.deepEqual([listed.kind, listed.indoor, listed.capacity], ['classroom', true, 30]);
+
+  // change type and capacity later; the old 'room' kind is gone
+  const p = await (await call('PATCH', `/spaces/${pav.body.id}`, admin, { capacity: 150, kind: 'park' })).json();
+  assert.deepEqual([p.kind, p.capacity], ['park', 150]);
+  await call('PATCH', `/spaces/${pav.body.id}`, admin, { kind: 'pavilion', capacity: null });
+  assert.equal((await call('PATCH', `/spaces/${pav.body.id}`, admin, { kind: 'room' })).status, 400);
+  assert.equal((await call('PATCH', `/spaces/${pav.body.id}`, coach, { capacity: 10 })).status, 403);
+
+  // sunset rule: an evening meeting in a classroom is fine, an unlit pavilion is not
+  await call('PATCH', '/settings', admin, { daylightRule: 'block' });
+  const late = '2026-12-14';
+  assert.equal((await req(coach, org, room.body.id, late, '18:30', '20:30')).status, 201);
+  assert.equal((await req(coach, org, pav.body.id, late, '18:30', '20:30')).status, 400);
+  await call('PATCH', '/settings', admin, { daylightRule: 'off' });
+
+  // a rate for every pavilion beats the general rate; one space beats the type
+  for (const b of [{ centsPerHour: 1000 }, { centsPerHour: 4000, spaceKind: 'pavilion' }, { centsPerHour: 2500, spaceKind: 'classroom' }])
+    assert.equal((await call('POST', '/fee-rates', admin, b)).status, 201);
+  assert.equal((await call('POST', '/fee-rates', admin, { centsPerHour: 1, spaceKind: 'castle' })).status, 400);
+  assert.equal((await call('POST', '/fee-rates', admin, { centsPerHour: 1, spaceKind: 'gym', spaceId: room.body.id })).status, 400);
+  let day = 3;
+  const priced = async (spaceId) => {
+    const r = await (await req(coach, org, spaceId, `2027-05-${String(day++).padStart(2, '0')}`, '10:00', '12:00')).json();
+    await call('POST', `/requests/${r.id}/decision`, admin, { decision: 'approve' });
+    return (await json('POST', `/requests/${r.id}/invoice`, admin, { preview: true })).totalCents;
+  };
+  assert.equal(await priced(pav.body.id), 8000);
+  assert.equal(await priced(room.body.id), 5000);
+  assert.equal(await priced(court.body.id), 2000);
+  assert.equal((await call('POST', '/fee-rates', admin, { centsPerHour: 9000, spaceId: pav.body.id })).status, 201);
+  assert.equal(await priced(pav.body.id), 18000);
+
+  // import understands the type column, in plain words
+  const rows = [
+    { facility: 'Lincoln Elementary', space: 'Gym', type: 'Gymnasium', capacity: '300' },
+    { facility: 'Lincoln Elementary', space: 'Room 12', type: 'classroom', capacity: '28' },
+    { facility: 'Lincoln Elementary', space: 'All-purpose room', type: 'Multi-purpose room' },
+    { facility: 'Riverside Park', space: 'Shelter A', type: 'picnic pavilion' },
+    { facility: 'Riverside Park', field: 'Diamond 1', type: 'softball' },
+    { facility: 'Riverside Park', space: 'Moon base', type: 'spaceship' },
+  ];
+  const imp = await json('POST', '/import/spaces', admin, { rows });
+  assert.equal(imp.created.spaces, 5); assert.equal(imp.errors.length, 1); assert.match(imp.errors[0].message, /Unknown type/);
+  const got = Object.fromEntries((await q("select name, kind, indoor, capacity from space where tenant_id = $1 and name in ('Gym','Room 12','All-purpose room','Shelter A','Diamond 1')", [T])).map((s) => [s.name, [s.kind, s.indoor, s.capacity]]));
+  assert.deepEqual(got, { Gym: ['gym', true, 300], 'Room 12': ['classroom', true, 28], 'All-purpose room': ['multipurpose', true, null], 'Shelter A': ['pavilion', false, null], 'Diamond 1': ['diamond', false, null] });
+});

@@ -10,7 +10,7 @@ else {
   document.title = `${s.organization || s.name} schedule`;
   const days = new Map();
   for (const e of s.events) { const k = f(e.startsAt, { weekday: 'long', month: 'long', day: 'numeric' }); if (!days.has(k)) days.set(k, []); days.get(k).push(e); }
-  w.replaceChildren(el('div', { class: 'hd' }, el('h1', {}, s.organization ? `${s.organization} schedule` : `${s.name} schedule`), el('p', { class: 'muted' }, 'Approved field time for the next 90 days.')),
+  w.replaceChildren(el('div', { class: 'hd' }, el('h1', {}, s.organization ? `${s.organization} schedule` : `${s.name} schedule`), el('p', { class: 'muted' }, 'Approved bookings for the next 90 days.')),
     ...(days.size ? [...days].flatMap(([d, list]) => [el('h3', { class: 'd' }, d), ...list.map((e) => el('div', { class: 'ev' },
       el('b', {}, `${f(e.startsAt, { hour: 'numeric', minute: '2-digit' })} to ${f(e.endsAt, { hour: 'numeric', minute: '2-digit' })}`),
       `${e.space}, ${e.facility}`, el('br'), `${e.organization}: ${e.title}${e.label ? ` (${e.label})` : ''}`))]) : [el('p', { class: 'muted' }, 'Nothing is scheduled yet.')]));

@@ -12,12 +12,12 @@ export function localParts(date, tz) {
 const toMin = (t) => { const [h, m] = String(t).split(':').map(Number); return h * 60 + m; };
 
 // Checks each date against the group's rules. Returns [{ blocks: [msg], warnings: [msg] }] in the same order as `dates`.
-//   hours rules (space_hours), daylight rule for unlit spaces, insurance rule for the organization.
+//   hours rules (space_hours), daylight rule for unlit outdoor spaces, insurance rule for the organization.
 export async function checkDates(c, { tenant, spaceId, organizationId, dates }) {
   const tz = tenant.timezone;
   const { rows: chain } = await c.query(
-    'select id, has_lights from space where id = $1 or id in (select space_ancestors($1))', [spaceId]);
-  const lit = chain.some((s) => s.has_lights);
+    'select id, has_lights, indoor from space where id = $1 or id in (select space_ancestors($1))', [spaceId]);
+  const lit = chain.some((s) => s.has_lights || s.indoor); // indoor spaces have their own lighting
   const ids = chain.map((s) => s.id);
   const { rows: hours } = await c.query(
     'select weekdays, opens, closes, starts_on::text, ends_on::text, enforcement, note from space_hours where space_id is null or space_id = any($1)', [ids]);

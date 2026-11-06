@@ -133,7 +133,7 @@ adminRouter.get('/export/bookings.csv', requireStaff, async (req, res, next) => 
       const f = from ? localToUtc(from, '00:00', tz) : null;
       const t = to ? localToUtc(new Date(Date.parse(`${to}T00:00:00Z`) + 86400000).toISOString().slice(0, 10), '00:00', tz) : null;
       const r = (await c.query(
-        `select o.name as organization, r.title, bd.label as team, f.name as facility, s.name as field, bd.starts_at, bd.ends_at, bd.status, bd.warning, p.number as permit
+        `select o.name as organization, r.title, bd.label as team, f.name as facility, s.name as space, bd.starts_at, bd.ends_at, bd.status, bd.warning, p.number as permit
            from booking_date bd join request r on r.id = bd.request_id join organization o on o.id = r.organization_id join space s on s.id = bd.space_id join facility f on f.id = s.facility_id
            left join permit p on p.request_id = r.id and p.revoked_at is null
           where ($1::timestamptz is null or bd.ends_at > $1) and ($2::timestamptz is null or bd.starts_at < $2) order by bd.starts_at limit 20000`, [f, t])).rows;
@@ -141,7 +141,7 @@ adminRouter.get('/export/bookings.csv', requireStaff, async (req, res, next) => 
       return r.map((x) => ({ ...x, date: fd(x.starts_at, { year: 'numeric', month: '2-digit', day: '2-digit' }),
         start: fd(x.starts_at, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }), end: fd(x.ends_at, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) }));
     });
-    sendCsv(res, 'bookings.csv', toCsv(['organization', 'title', 'team', 'facility', 'field', 'date', 'start', 'end', 'status', 'permit', 'warning'], rows));
+    sendCsv(res, 'bookings.csv', toCsv(['organization', 'title', 'team', 'facility', 'space', 'date', 'start', 'end', 'status', 'permit', 'warning'], rows));
   } catch (err) { next(err); }
 });
 
@@ -153,7 +153,7 @@ adminRouter.get('/export/usage.csv', requireStaff, async (req, res, next) => {
       const tz = (await c.query('select timezone from tenant where id = $1', [req.tenantId])).rows[0].timezone;
       const f = localToUtc(from, '00:00', tz), t = localToUtc(new Date(Date.parse(`${to}T00:00:00Z`) + 86400000).toISOString().slice(0, 10), '00:00', tz);
       return (await c.query(
-        `select o.name as organization, s.name as field,
+        `select o.name as organization, s.name as space,
                 count(*) filter (where bd.status = 'confirmed')::int as bookings,
                 round((sum(extract(epoch from (least(bd.ends_at, $2) - greatest(bd.starts_at, $1))) / 3600) filter (where bd.status = 'confirmed'))::numeric, 1) as hours,
                 count(*) filter (where bd.status = 'cancelled')::int as cancelled,
@@ -161,6 +161,6 @@ adminRouter.get('/export/usage.csv', requireStaff, async (req, res, next) => {
            from booking_date bd join request r on r.id = bd.request_id join organization o on o.id = r.organization_id join space s on s.id = bd.space_id
           where bd.starts_at < $2 and bd.ends_at > $1 group by o.name, s.name order by o.name, s.name`, [f, t])).rows;
     });
-    sendCsv(res, 'usage.csv', toCsv(['organization', 'field', 'bookings', 'hours', 'cancelled', 'late_cancellations'], rows));
+    sendCsv(res, 'usage.csv', toCsv(['organization', 'space', 'bookings', 'hours', 'cancelled', 'late_cancellations'], rows));
   } catch (err) { next(err); }
 });

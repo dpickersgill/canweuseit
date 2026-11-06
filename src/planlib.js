@@ -9,7 +9,7 @@ export async function planUsage(c, tenantId) {
   return { plan: p.code, name: p.name, priceCents: p.base_price_cents, onlinePayments: p.online_payments,
     maxFacilities: p.max_facilities, maxFields, facilities: n.facilities, fields: n.fields };
 }
-export const limitError = (what, u) => Object.assign(new Error(`The ${u.name} plan includes ${what === 'facility' ? `${u.maxFacilities} site${u.maxFacilities === 1 ? '' : 's'}` : `${u.maxFields} fields`}. Upgrade to add more.`), { http: 402 });
+export const limitError = (what, u) => Object.assign(new Error(`The ${u.name} plan includes ${what === 'facility' ? `${u.maxFacilities} site${u.maxFacilities === 1 ? '' : 's'}` : `${u.maxFields} spaces`}. Upgrade to add more.`), { http: 402 });
 export async function checkLimit(c, tenantId, what) {
   const u = await planUsage(c, tenantId);
   if (what === 'facility' && u.maxFacilities != null && u.facilities >= u.maxFacilities) throw limitError(what, u);

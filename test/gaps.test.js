@@ -243,7 +243,7 @@ test('self-serve sign-up, plan limits and the group switcher', async () => {
   assert.equal((await as('POST', '/facilities', { name: 'Second' })).status, 402);
   for (const n of ['A', 'B', 'C', 'C2']) assert.equal((await as('POST', '/spaces', { facilityId: f1.id, name: n })).status, 201);
   const fourth = await as('POST', '/spaces', { facilityId: f1.id, name: 'D' });
-  assert.equal(fourth.status, 402); assert.match((await fourth.json()).error, /Free plan includes 4 fields/);
+  assert.equal(fourth.status, 402); assert.match((await fourth.json()).error, /Free plan includes 4 spaces/);
   const a = (await q("select id from space where tenant_id = $1 and name = 'A'", [t.id]))[0].id;
   assert.equal((await as('POST', '/spaces', { facilityId: f1.id, parentId: a, name: 'A north' })).status, 201, 'sections do not count');
 

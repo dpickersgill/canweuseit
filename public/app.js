@@ -1,10 +1,11 @@
 // CanWeUseIt web app. No build step; all text goes through el() so nothing user-supplied is ever parsed as HTML.
 import { seasonsView, billingView, applicationsPanel, activityPanel, invoiceBox, download, money } from './more.js';
 import { mapPicker, mapEditor, hasMap, teamPlanBox, releaseBox, teamsPanel, paymentsPanel, planPanel, utilizationPanel, profileView } from './gaps.js';
+import { SPACE_KINDS, kindOf, defaultIndoor } from './kinds.js';
 import { icon, brandMark, productArt, emptyState, skeleton, menu, sheet, groupColor, shortOrg, shortSpace, savedTheme, saveTheme, isPhone } from './ui.js';
 const $app = document.getElementById('app');
 const state = { me: null, tenants: [], tenant: null, view: 'schedule', spaces: [], orgs: [], weekStart: null, month: null, calMode: null, agendaStart: null, selectedDay: null,
-  prefill: null, compliance: [], report: null, spaceFilter: '', rq: null, rqSel: null, pendingCount: 0, setupTab: 'start' };
+  prefill: null, compliance: [], report: null, spaceFilter: '', kindFilter: '', rq: null, rqSel: null, pendingCount: 0, setupTab: 'start' };
 
 /* ---------- helpers ---------- */
 function el(tag, attrs = {}, ...kids) {
@@ -54,20 +55,33 @@ const colorVar = (orgId) => `--c:${groupColor(orgId, state.orgs.findIndex((o) =>
 
 async function guard(fn) { try { await fn(); } catch (e) { if (e.message !== 'Sign in required') toast(e.message, true); } }
 
+/* ---------- what this group rents ----------
+   A group that only has fields (and ball diamonds) keeps hearing "fields"; one that also rents pavilions,
+   courts or rooms hears "spaces". W(true) is the plural, W(false, true) the capitalised singular. */
+const fieldsOnly = () => state.spaces.every((s) => kindOf(s.kind).pitch);
+function W(plural = false, capital = false) { const w = fieldsOnly() ? (plural ? 'fields' : 'field') : (plural ? 'spaces' : 'space'); return capital ? w[0].toUpperCase() + w.slice(1) : w; }
+const kindsInUse = () => SPACE_KINDS.filter((k) => state.spaces.some((s) => !s.parent_id && s.kind === k.code));
+const spaceById = (id) => state.spaces.find((s) => s.id === id);
+// Short facts about a space for cards and pickers: "Pavilion, up to 120 people, indoor"
+const spaceFacts = (s) => [kindOf(s.kind).label, s.capacity ? `up to ${s.capacity} people` : null,
+  kindOf(s.kind).where === 'either' ? (s.indoor ? 'indoor' : 'outdoor') : null].filter(Boolean).join(', ');
+
 /* ---------- pitch picker: each field drawn as a pitch, sections as its parts ---------- */
 function pitchPicker(spaces, { selected, onSelect, closed = new Set() }) {
   const kids = (id) => spaces.filter((s) => s.parent_id === id);
-  const tags = (s) => [s.has_lights ? el('span', { class: 'tag' }, icon('lightbulb', { size: 12 }), 'Lights') : null,
+  const tags = (s) => [s.has_lights && !s.indoor ? el('span', { class: 'tag' }, icon('lightbulb', { size: 12 }), 'Lights') : null,
+    !s.parent_id && s.capacity ? el('span', { class: 'tag' }, icon('users', { size: 12 }), String(s.capacity)) : null,
     closed.has(s.id) ? el('span', { class: 'tag' }, icon('lock', { size: 12 }), 'Closed') : null];
   const btn = (s, cls, label) => el('button', {
     type: 'button', class: cls, 'aria-pressed': String(selected === s.id), onclick: () => onSelect && onSelect(s),
-    'aria-label': `${label || s.name}${closed.has(s.id) ? ', closed that day' : ''}${s.has_lights ? ', has lights' : ''}`,
-  }, el('span', {}, label || s.name), ...tags(s));
+    'aria-label': `${label || s.name}${s.parent_id ? '' : `, ${spaceFacts(s)}`}${closed.has(s.id) ? ', closed that day' : ''}${s.has_lights && !s.indoor ? ', has lights' : ''}`,
+  }, !s.parent_id && !kindOf(s.kind).pitch ? icon(kindOf(s.kind).icon, { size: 18 }) : null, el('span', {}, label || s.name), ...tags(s));
   const node = (s) => {
     const parts = kids(s.id);
-    if (!parts.length) return el('div', { class: 'pitch single' + (closed.has(s.id) ? ' closed' : '') }, btn(s, 'whole'));
-    return el('div', { class: 'pitch' + (closed.has(s.id) ? ' closed' : '') },
-      btn(s, 'whole', `${s.name} (whole field)`),
+    const look = kindOf(s.kind).pitch ? 'pitch' : `pitch venue${s.indoor ? ' indoor' : ''}`;
+    if (!parts.length) return el('div', { class: `${look} single` + (closed.has(s.id) ? ' closed' : '') }, btn(s, 'whole'));
+    return el('div', { class: look + (closed.has(s.id) ? ' closed' : '') },
+      btn(s, 'whole', `${s.name} (whole ${kindOf(s.kind).pitch ? 'field' : 'space'})`),
       el('div', { class: 'parts' }, parts.map((p) => (kids(p.id).length ? node(p) : btn(p, 'part')))));
   };
   const byFacility = new Map();
@@ -103,9 +117,9 @@ function loginScreen() {
     el('main', { class: 'signin-form', id: 'main' },
       el('a', { class: 'public-brand', href: '/' }, brandMark(32), 'CanWeUseIt'),
       el('h1', {}, 'Sign in'),
-      el('p', { class: 'muted' }, 'Request field time, see what is approved, and keep every club on the same page.'),
+      el('p', { class: 'muted' }, 'Request fields, courts, pavilions and rooms, see what is approved, and keep every club on the same page.'),
       box,
-      el('p', { class: 'small' }, 'Run the fields for a league, district or town? ', el('a', { href: '/signup' }, 'Start your group free')),
+      el('p', { class: 'small' }, 'Run the fields or buildings for a league, school district or township? ', el('a', { href: '/signup' }, 'Start your group free')),
       legalLinks()),
     el('aside', { class: 'signin-art' }, el('p', { class: 'tag-line' }, 'Fair field time, without the email chains.'),
       el('p', { class: 'sub' }, 'Clubs and schools ask for time. You approve it in one place. Everyone sees the same schedule.'), productArt()));
@@ -216,7 +230,7 @@ function moveForm(d, done) {
   }); } }, field('Date', date), el('div', { class: 'grid2' }, field('Starts', start), field('Ends', end)), el('button', { class: 'btn', type: 'submit' }, 'Move'));
 }
 const skipDate = (d, reason) => guard(async () => {
-  const note = reason ? prompt('Skip this date? Add a reason for the requester (optional).', '') : (confirm('Skip this date? The field becomes free for others.') ? '' : null);
+  const note = reason ? prompt('Skip this date? Add a reason for the requester (optional).', '') : (confirm(`Skip this date? The ${W()} becomes free for others.`) ? '' : null);
   if (note === null) return;
   await api(`/booking-dates/${d.id}/cancel`, { method: 'POST', body: { note } }); toast('Date skipped'); render();
 });
@@ -252,8 +266,8 @@ async function scheduleView() {
   let from, days;
   if (mode === 'month') { const g = monthGrid(state.month); from = g.gridStart; days = g.n; } else if (mode === 'week') { from = state.weekStart; days = 7; } else { from = state.agendaStart; days = AGENDA_DAYS; }
   const [{ bookings }, { closures }] = await Promise.all([api(`/bookings?start=${from}&days=${days}`), api('/closures')]);
-  const shown = bookings.filter((b) => !state.spaceFilter || related(b.spaceId, state.spaceFilter));
-  const closedOn = (d) => closures.filter((c) => (!state.spaceFilter || related(c.spaceId, state.spaceFilter)) && ymd(c.startsAt) <= d && ymd(new Date(new Date(c.endsAt) - 1)) >= d);
+  const shown = bookings.filter((b) => spaceShown(b.spaceId));
+  const closedOn = (d) => closures.filter((c) => spaceShown(c.spaceId) && ymd(c.startsAt) <= d && ymd(new Date(new Date(c.endsAt) - 1)) >= d);
 
   const modeBtn = (m, label) => el('button', { type: 'button', 'aria-pressed': String(mode === m), onclick: () => { state.calMode = m; render(); } }, label);
   const title = mode === 'month' ? fmt(`${state.month}T12:00:00Z`, { month: 'long', year: 'numeric', timeZone: 'UTC' })
@@ -269,13 +283,20 @@ async function scheduleView() {
       el('button', { class: 'icon-btn', 'aria-label': `Next ${unit}`, onclick: () => step(1) }, icon('chevron-right')),
       menu('More schedule options', [{ label: 'Add to your calendar', icon: 'calendar', onSelect: () => go('calendar') }, { label: 'Request time', icon: 'circle-plus', onSelect: () => go('new') }]))));
 
-  // field filter as chips (a dropdown when there are many fields)
-  const roots = state.spaces.filter((s) => !s.parent_id);
-  if (roots.length > 1 && roots.length <= 6) main.append(el('div', { class: 'chips field-chips', role: 'group', 'aria-label': 'Show fields' },
-    el('button', { class: 'chip', 'aria-pressed': String(!state.spaceFilter), onclick: () => { state.spaceFilter = ''; render(); } }, 'All fields'),
+  // type filter (fields, pavilions, rooms...) when a group rents more than one kind
+  const kinds = kindsInUse();
+  if (state.kindFilter && !kinds.some((k) => k.code === state.kindFilter)) state.kindFilter = '';
+  if (kinds.length > 1) main.append(el('div', { class: 'chips field-chips', role: 'group', 'aria-label': 'Show type' },
+    el('button', { class: 'chip', 'aria-pressed': String(!state.kindFilter), onclick: () => { state.kindFilter = ''; render(); } }, 'Everything'),
+    kinds.map((k) => el('button', { class: 'chip', 'aria-pressed': String(state.kindFilter === k.code), onclick: () => { state.kindFilter = k.code; state.spaceFilter = ''; render(); } }, icon(k.icon, { size: 14 }), k.plural))));
+  // space filter as chips (a dropdown when there are many)
+  const roots = state.spaces.filter((s) => !s.parent_id && (!state.kindFilter || s.kind === state.kindFilter));
+  const allLabel = state.kindFilter ? `All ${kindOf(state.kindFilter).plural.toLowerCase()}` : `All ${W(true)}`;
+  if (roots.length > 1 && roots.length <= 6) main.append(el('div', { class: 'chips field-chips', role: 'group', 'aria-label': `Show ${W(true)}` },
+    el('button', { class: 'chip', 'aria-pressed': String(!state.spaceFilter), onclick: () => { state.spaceFilter = ''; render(); } }, allLabel),
     roots.map((s) => el('button', { class: 'chip', 'aria-pressed': String(state.spaceFilter === s.id), onclick: () => { state.spaceFilter = s.id; render(); } }, s.name))));
-  else if (roots.length > 6) main.append(el('div', { class: 'field-chips' }, el('select', { class: 'w-m', 'aria-label': 'Show fields', onchange: (e) => { state.spaceFilter = e.target.value; render(); } },
-    el('option', { value: '' }, 'All fields'), state.spaces.map((s) => el('option', { value: s.id, selected: s.id === state.spaceFilter }, (s.parent_id ? '  ' : '') + s.name)))));
+  else if (roots.length > 6) main.append(el('div', { class: 'field-chips' }, el('select', { class: 'w-m', 'aria-label': `Show ${W(true)}`, onchange: (e) => { state.spaceFilter = e.target.value; render(); } },
+    el('option', { value: '' }, allLabel), state.spaces.filter((s) => !state.kindFilter || s.kind === state.kindFilter).map((s) => el('option', { value: s.id, selected: s.id === state.spaceFilter }, (s.parent_id ? '  ' : '') + s.name)))));
   main.append(el('div', { class: 'legend-row' }, el('span', {}, el('span', { class: 'sw' }), 'Approved'), el('span', {}, el('span', { class: 'sw pending' }), 'Waiting for approval'),
     el('span', {}, icon('lock', { size: 14 }), ' Closed'), isStaff() ? null : el('span', { class: 'small' }, 'You see waiting requests only for your own group.')));
 
@@ -323,7 +344,7 @@ async function scheduleView() {
           el('span', {}, el('span', { style: 'font-weight:600' }, b.title), el('br'), el('span', { class: 'w' }, `${b.space} · ${b.organization} · until ${compactTime(b.endsAt)}`)),
           b.status === 'pending' ? statusBadge('pending') : icon('chevron-right', { size: 18 }))))));
     }
-    main.append(list.childElementCount ? list : emptyState('Nothing booked in these three weeks', 'Approved field time shows up here. Use Request time to ask for a slot.',
+    main.append(list.childElementCount ? list : emptyState('Nothing booked in these three weeks', `Approved ${W()} time shows up here. Use Request time to ask for a slot.`,
       el('button', { class: 'btn', onclick: () => go('new') }, icon('circle-plus', { size: 18 }), 'Request time')));
   }
   if (mode !== 'agenda') {
@@ -333,7 +354,11 @@ async function scheduleView() {
   return main;
 }
 
-/* One day, one lane per field: booked time is filled, free time is a button that starts a request. */
+// Is this space in the current schedule filter (one space, or one kind of space)?
+function spaceShown(id) {
+  return (!state.spaceFilter || related(id, state.spaceFilter)) && (!state.kindFilter || !id || spaceById(id)?.kind === state.kindFilter);
+}
+/* One day, one lane per space: booked time is filled, free time is a button that starts a request. */
 function dayPanel(day, bookings, closures, today, inSheet) {
   const START = 6, END = 22, span = (END - START) * 60;
   const dayBookings = bookings.filter((b) => ymd(b.startsAt) === day);
@@ -350,7 +375,7 @@ function dayPanel(day, bookings, closures, today, inSheet) {
     for (const s of state.spaces.filter((x) => (x.parent_id || null) === parentId).sort((a, b) => a.name.localeCompare(b.name))) { lanes.push([s, depth]); walk(s.id, depth + 1); }
   };
   walk(null, 0);
-  const laneEls = lanes.filter(([s]) => !state.spaceFilter || related(s.id, state.spaceFilter)).map(([s, depth]) => {
+  const laneEls = lanes.filter(([s]) => spaceShown(s.id)).map(([s, depth]) => {
     const own = dayBookings.filter((b) => b.spaceId === s.id);
     const shared = dayBookings.filter((b) => b.spaceId !== s.id && related(b.spaceId, s.id));
     const shut = dayClosures.filter((c) => related(c.spaceId, s.id));
@@ -389,7 +414,7 @@ function dayPanel(day, bookings, closures, today, inSheet) {
     inSheet && !past ? el('button', { class: 'btn', onclick: () => { document.querySelector('dialog[open]')?.close(); state.prefill = { date: day }; go('new'); } }, icon('circle-plus', { size: 18 }), 'Request time this day') : null,
     dayClosures.map((c) => el('p', { class: 'closed-note' }, icon('lock', { size: 14 }), `Closed: ${c.space}. ${c.reason}`)),
     el('div', { class: 'lanes' }, el('div', { class: 'lane head-lane' }, el('div', { class: 'lane-name' }), hourTicks), laneEls),
-    !past ? el('p', { class: 'muted small' }, 'Tap an open hour to start a request. Striped time means part or all of that field is in use.') : null,
+    !past ? el('p', { class: 'muted small' }, `Tap an open hour to start a request. Striped time means part or all of that ${W()} is in use.`) : null,
     list.length ? el('div', { class: 'items' }, list) : el('p', { class: 'muted' }, 'Nothing booked this day.'));
 }
 
@@ -430,7 +455,7 @@ function problemLines(r) {
   if (!total) return out;
   const say = (n, msg) => out.push(`${n === total ? (total === 1 ? 'This date' : `All ${total} dates`) : `${n} of ${total} dates`}: ${msg}`);
   const clash = open.filter((d) => d.conflict).length;
-  if (clash) say(clash, 'the field is already booked');
+  if (clash) say(clash, `the ${W()} is already booked`);
   const warn = new Map();
   for (const d of open) if (d.warning) { const k = d.warning.replace(/\s*\([^)]*\)/g, '').trim(); warn.set(k, (warn.get(k) || 0) + 1); }
   for (const [k, n] of warn) say(n, k.charAt(0).toLowerCase() + k.slice(1));
@@ -518,7 +543,7 @@ function requestCard(r, { picked, onPick } = {}) {
       staff && r.status === 'pending' && onPick ? el('label', { class: 'pick' }, el('input', { type: 'checkbox', checked: !!picked, 'aria-label': `Select ${r.title}`, onchange: (e) => onPick(e.target.checked) })) : el('span', {}),
       el('div', { class: 'grow-1' }, el('h3', {}, r.title),
         el('div', { class: 'rq-meta' }, el('span', { class: 'dot', style: colorVar(r.organization_id) }), el('span', {}, r.organization),
-          el('span', { class: 'sep' }, '·'), el('span', {}, where.length > 2 ? `${where.length} fields` : (where.join(' and ') || r.space)),
+          el('span', { class: 'sep' }, '·'), el('span', {}, where.length > 2 ? `${where.length} ${W(true)}` : (where.join(' and ') || r.space)),
           staff ? el('span', { class: 'pill' }, `${cap(org?.kind || 'club')}${r.tier && r.tier !== 3 ? `, ${TIER[r.tier].toLowerCase()}` : ''}`) : null,
           r.submitted_at ? el('span', { class: 'small' }, `Sent ${shortDate(r.submitted_at)}`) : null)),
       el('div', { class: 'rq-acts' },
@@ -549,7 +574,7 @@ async function requestsView() {
   if (staff) {
     const q = el('input', { type: 'search', placeholder: 'Search title or group', value: rq.q || '', 'aria-label': 'Search' });
     const org = el('select', { 'aria-label': 'Group' }, el('option', { value: '' }, 'All groups'), state.orgs.map((o) => el('option', { value: o.id, selected: rq.org === o.id }, o.name)));
-    const sp = el('select', { 'aria-label': 'Field' }, el('option', { value: '' }, 'All fields'), state.spaces.map((x) => el('option', { value: x.id, selected: rq.space === x.id }, x.name)));
+    const sp = el('select', { 'aria-label': W(false, true) }, el('option', { value: '' }, `All ${W(true)}`), state.spaces.map((x) => el('option', { value: x.id, selected: rq.space === x.id }, x.name)));
     const f1 = el('input', { type: 'date', value: rq.from || '', 'aria-label': 'From date' }), f2 = el('input', { type: 'date', value: rq.to || '', 'aria-label': 'To date' });
     const apply = () => { Object.assign(rq, { q: q.value.trim(), org: org.value, space: sp.value, from: f1.value, to: f2.value }); render(); };
     const active = ['q', 'org', 'space', 'from', 'to', 'round'].filter((k) => rq[k]).length;
@@ -586,7 +611,7 @@ async function requestsView() {
   wrap.append(bar);
 
   if (!requests.length) wrap.append(emptyState(rq.status === 'pending' ? 'Nothing waiting' : 'No requests here',
-    staff ? 'New requests from clubs and schools show up here.' : 'Ask for a field and your requests show up here.',
+    staff ? 'New requests from clubs and schools show up here.' : `Ask for a ${W()} and your requests show up here.`,
     staff ? null : el('button', { class: 'btn', onclick: () => go('new') }, icon('circle-plus', { size: 18 }), 'Request time')));
   else if (staff && matchMedia('(min-width: 1100px)').matches && requests.length > 1) {
     // inbox layout: the list on the left, the chosen request on the right
@@ -626,7 +651,7 @@ const DOW = [['Mon', 1], ['Tue', 2], ['Wed', 3], ['Thu', 4], ['Fri', 5], ['Sat',
 const nextWeekday = () => { let d = addDays(ymd(new Date()), 1); while ([0, 6].includes(new Date(`${d}T12:00:00Z`).getUTCDay())) d = addDays(d, 1); return d; };
 async function newRequestView() {
   const orgs = state.orgs.filter((o) => isAdmin() || myOrgIds().includes(o.id));
-  if (!orgs.length) return emptyState('You are not in a group yet', 'Ask your club or school admin to add you, then you can request field time here.');
+  if (!orgs.length) return emptyState('You are not in a group yet', 'Ask your club or school admin to add you, then you can request time here.');
   const pre = state.prefill || {}; state.prefill = null;
   const [{ hours }, roundsRes, { closures }] = await Promise.all([api('/hours'), api('/rounds').catch(() => ({ rounds: [] })), api('/closures').catch(() => ({ closures: [] }))]);
   const now = Date.now();
@@ -702,30 +727,31 @@ async function newRequestView() {
     const sp = state.spaces.find((x) => x.id === f.items[0].spaceId);
     const rules = hours.filter((h) => !h.spaceId || (f.items[0].spaceId && related(h.spaceId, f.items[0].spaceId)));
     const parts = [];
-    if (sp && !sp.has_lights && state.tenant.daylightRule && state.tenant.daylightRule !== 'off') parts.push('This field has no lights, so time must end before sunset.');
-    for (const h of rules) parts.push(`${h.space || 'All fields'}: ${h.weekdays.length === 7 ? 'daily' : h.weekdays.map((n) => WEEKDAYS[n]).join(', ')} ${h.opens} to ${h.closes}${h.note ? ` (${h.note})` : ''}.`);
+    if (sp && !sp.has_lights && !sp.indoor && state.tenant.daylightRule && state.tenant.daylightRule !== 'off') parts.push(`This ${kindOf(sp.kind).label.toLowerCase()} has no lights, so time must end before sunset.`);
+    if (sp?.capacity) parts.push(`${sp.name} holds up to ${sp.capacity} people.`);
+    for (const h of rules) parts.push(`${h.space || `All ${W(true)}`}: ${h.weekdays.length === 7 ? 'daily' : h.weekdays.map((n) => WEEKDAYS[n]).join(', ')} ${h.opens} to ${h.closes}${h.note ? ` (${h.note})` : ''}.`);
     hint.textContent = parts.join(' ');
   };
   const itemsHost = el('div', { class: 'stack' });
   const drawItems = () => {
     const closed = closedSet();
     itemsHost.replaceChildren(...f.items.map((it, i) => {
-      const label = el('input', { type: 'text', maxlength: 80, placeholder: 'Team, for example U12 girls (optional)', value: it.label, 'aria-label': `Team for field ${i + 1}`, oninput: (e) => { it.label = e.target.value; drawSummary(); } });
+      const label = el('input', { type: 'text', maxlength: 80, placeholder: 'Team, for example U12 girls (optional)', value: it.label, 'aria-label': `Team for ${W()} ${i + 1}`, oninput: (e) => { it.label = e.target.value; drawSummary(); } });
       const picker = el('div', { class: 'stack' });
       const pick = (sp) => { it.spaceId = sp.id; draw(); describe(); changed(); };
-      const views = () => (i === 0 && hasMap() ? el('div', { class: 'seg', role: 'group', 'aria-label': 'Show fields as' },
-        [['diagram', 'Fields'], ['map', 'Satellite map']].map(([v, l]) => el('button', { type: 'button', 'aria-pressed': String(f.look === v), onclick: () => { f.look = v; draw(); } }, l))) : null);
+      const views = () => (i === 0 && hasMap() ? el('div', { class: 'seg', role: 'group', 'aria-label': `Show ${W(true)} as` },
+        [['diagram', W(true, true)], ['map', 'Satellite map']].map(([v, l]) => el('button', { type: 'button', 'aria-pressed': String(f.look === v), onclick: () => { f.look = v; draw(); } }, l))) : null);
       const draw = () => picker.replaceChildren(...[views(), i === 0
-        ? (f.look === 'map' ? el('div', { class: 'stack' }, mapPicker({ selected: it.spaceId, onSelect: pick }), el('p', { class: 'muted small' }, it.spaceId ? `Chosen: ${spaceName(it.spaceId)}` : 'Tap a field or a section on the map.'))
+        ? (f.look === 'map' ? el('div', { class: 'stack' }, mapPicker({ selected: it.spaceId, onSelect: pick }), el('p', { class: 'muted small' }, it.spaceId ? `Chosen: ${spaceName(it.spaceId)}` : `Tap a ${W()} or a section on the map.`))
           : pitchPicker(state.spaces, { selected: it.spaceId, onSelect: pick, closed }))
-        : el('select', { 'aria-label': `Field ${i + 1}`, onchange: (e) => { it.spaceId = e.target.value; drawSummary(); } }, el('option', { value: '' }, 'Choose a field'), state.spaces.map((sp) => el('option', { value: sp.id, selected: sp.id === it.spaceId }, `${sp.parent_id ? 'Section: ' : ''}${sp.name}`)))].filter(Boolean));
+        : el('select', { 'aria-label': `${W(false, true)} ${i + 1}`, onchange: (e) => { it.spaceId = e.target.value; drawSummary(); } }, el('option', { value: '' }, `Choose a ${W()}`), state.spaces.map((sp) => el('option', { value: sp.id, selected: sp.id === it.spaceId }, `${sp.parent_id ? 'Section: ' : ''}${sp.name}${sp.parent_id || fieldsOnly() ? '' : ` (${kindOf(sp.kind).label.toLowerCase()})`}`)))].filter(Boolean));
       draw();
       const t1 = el('input', { type: 'time', value: it.start, oninput: (e) => { it.start = e.target.value; } }), t2 = el('input', { type: 'time', value: it.end, oninput: (e) => { it.end = e.target.value; } });
-      return el('div', { class: i ? 'panel stack' : 'stack' }, i === 0 && f.items.length === 1 ? null : el('div', { class: 'row between' }, el('b', {}, `Field ${i + 1}`),
+      return el('div', { class: i ? 'panel stack' : 'stack' }, i === 0 && f.items.length === 1 ? null : el('div', { class: 'row between' }, el('b', {}, `${W(false, true)} ${i + 1}`),
         i ? el('button', { type: 'button', class: 'btn ghost small', onclick: () => { f.items.splice(i, 1); drawItems(); drawSummary(); } }, icon('x', { size: 16 }), 'Remove') : null),
       picker, label,
       i ? el('details', {}, el('summary', {}, 'Different time for this team'), el('div', { class: 'grid2' }, field('Starts', t1), field('Ends', t2))) : null);
-    }), el('button', { type: 'button', class: 'btn ghost small', onclick: () => { f.items.push({ spaceId: '', label: '', start: '', end: '' }); drawItems(); } }, icon('circle-plus', { size: 16 }), 'Add another field or team'));
+    }), el('button', { type: 'button', class: 'btn ghost small', onclick: () => { f.items.push({ spaceId: '', label: '', start: '', end: '' }); drawItems(); } }, icon('circle-plus', { size: 16 }), `Add another ${W()} or team`));
   };
 
   // upload a whole schedule instead
@@ -735,14 +761,14 @@ async function newRequestView() {
     const rows = parseTable(upBox.value); const errors = []; const groups = new Map();
     rows.forEach((r, i) => {
       const sp = state.spaces.find((x) => x.name.toLowerCase() === String(r.field || r.space || '').trim().toLowerCase());
-      if (!sp) return errors.push(`Row ${i + 1}: unknown field "${r.field || r.space || ''}"`);
+      if (!sp) return errors.push(`Row ${i + 1}: unknown ${W()} "${r.field || r.space || ''}"`);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(r.date || '') || !/^\d{2}:\d{2}$/.test(r.start || '') || !/^\d{2}:\d{2}$/.test(r.end || '')) return errors.push(`Row ${i + 1}: use date 2027-09-07 and times like 17:00`);
       const k = `${sp.id}|${r.team || ''}`; if (!groups.has(k)) groups.set(k, { spaceId: sp.id, label: (r.team || '').slice(0, 80), dates: [] });
       groups.get(k).dates.push({ date: r.date, startTime: r.start, endTime: r.end });
     });
     f.uploaded = errors.length || !groups.size ? null : [...groups.values()];
     const n = f.uploaded ? f.uploaded.reduce((a, g) => a + g.dates.length, 0) : 0;
-    upOut.replaceChildren(errors.length ? el('div', { class: 'notice stack' }, errors.slice(0, 10).map((e) => el('p', {}, e))) : el('p', { class: 'muted' }, f.uploaded ? `Ready: ${n} dates for ${f.uploaded.length} field and team combination${f.uploaded.length === 1 ? '' : 's'}. Choose Next.` : 'Paste a header row and some rows.'));
+    upOut.replaceChildren(errors.length ? el('div', { class: 'notice stack' }, errors.slice(0, 10).map((e) => el('p', {}, e))) : el('p', { class: 'muted' }, f.uploaded ? `Ready: ${n} dates for ${f.uploaded.length} ${W()} and team combination${f.uploaded.length === 1 ? '' : 's'}. Choose Next.` : 'Paste a header row and some rows.'));
     drawSummary();
   };
   const upFile = el('input', { type: 'file', accept: '.csv,.tsv,.txt', 'aria-label': 'Choose a file', onchange: async (e) => { const fl = e.target.files[0]; if (fl) { upBox.value = await fl.text(); readUpload(); } } });
@@ -775,9 +801,9 @@ async function newRequestView() {
       el('div', { class: 'grid2' }, field('Starts', start), field('Ends', end)),
       el('label', { for: 'rep', class: 'inline-check' }, rep, 'Repeats'), repeatBox,
       el('details', {}, el('summary', {}, icon('upload', { size: 16 }), ' Have a full schedule in a spreadsheet? Upload it instead'),
-        el('div', { class: 'stack' }, el('p', { class: 'muted small' }, 'Columns: field, team, date, start, end. One row per practice or game.'), upBox, upFile, upOut))),
+        el('div', { class: 'stack' }, el('p', { class: 'muted small' }, `Columns: ${W()}, team, date, start, end. One row per practice, game or event.`), upBox, upFile, upOut))),
     2: el('div', { class: 'panel stack' }, el('h3', {}, 'Where'),
-      el('p', { class: 'muted small' }, 'Tap a field or one of its halves. More than one field or team? Add them and send one request.'), itemsHost, hint, availBox),
+      el('p', { class: 'muted small' }, `Tap a ${W()} or one of its sections. More than one ${W()} or team? Add them and send one request.`), itemsHost, hint, availBox),
     3: el('div', { class: 'panel stack' }, el('h3', {}, 'Review and send'), banner,
       field('Title', title, 'What the approver sees first, for example "U12 spring practices".'), field('Notes (optional)', notes),
       roundSel ? field('Season', roundSel) : null),
@@ -822,7 +848,7 @@ async function newRequestView() {
       return showStep(2);
     }
     if (f.step === 2) {
-      if (f.items.some((it) => !it.spaceId)) throw new Error('Pick a field for each team, or remove the empty one');
+      if (f.items.some((it) => !it.spaceId)) throw new Error(`Pick a ${W()} for each team, or remove the empty one`);
       return showStep(3);
     }
     return send();
@@ -915,7 +941,7 @@ async function closuresView() {
     toast(r.closures > 1 ? `Closed ${r.closures} days${r.cancelledBookings ? `. ${r.cancelledBookings} booking${r.cancelledBookings === 1 ? '' : 's'} cancelled` : ''}` : r.cancelledBookings ? `Closed. ${r.cancelledBookings} booking${r.cancelledBookings === 1 ? '' : 's'} cancelled` : 'Closed'); render();
   }) }, icon('lock', { size: 18 }), 'Close it');
   return el('div', { class: 'stack' }, el('div', { class: 'head' }, el('div', {}, el('h2', {}, 'Closures'), el('p', { class: 'page-sub small' }, 'Rain, aeration, tournaments. Anything booked is cancelled and each group is told.'))),
-    section('Close a field',
+    section(`Close a ${W()}`,
       el('div', { class: 'grid2' }, field('Reason', reason), field('What', target)),
       el('div', { class: 'grid2' }, field('First day', d1), field('Last day', d2, 'Leave empty for one day')),
       el('div', { class: 'grid2' }, field('From (optional)', t1), field('Until (optional)', t2, 'Leave both times empty to close all day')),
@@ -923,7 +949,7 @@ async function closuresView() {
     closures.length ? section('Coming up', el('ul', { class: 'plain' }, closures.map((c) => el('li', { class: 'row between' },
       el('span', {}, icon('lock', { size: 16 }), ` ${c.space}: ${c.reason}, ${dayLabel(c.startsAt)} ${hhmm(c.startsAt)} to ${ymd(c.startsAt) === ymd(new Date(new Date(c.endsAt) - 1)) ? hhmm(c.endsAt) : `${dayLabel(new Date(new Date(c.endsAt) - 1))} ${hhmm(c.endsAt)}`}`),
       el('button', { class: 'btn ghost small', onclick: () => guard(async () => { if (!confirm('Reopen this? Cancelled bookings stay cancelled.')) return; await api(`/closures/${c.id}`, { method: 'DELETE' }); render(); }) }, 'Reopen')))))
-      : emptyState('No closures coming up', 'Every field is open as scheduled.'));
+      : emptyState('No closures coming up', `Every ${W()} is open as scheduled.`));
 }
 
 /* ---------- Reports ---------- */
@@ -942,7 +968,7 @@ async function reportsView() {
       el('button', { class: 'btn small', onclick: () => { state.report = { from: from.value, to: to.value }; render(); } }, 'Show')),
     el('div', { class: 'stats' }, [['Hours booked', data.totalHours], ['Waiting', data.pending], ['Cancelled dates', data.cancelled], ['Clashes', data.conflicts]].map(([l, v]) =>
       el('div', { class: 'stat panel' }, el('b', {}, String(v)), el('span', { class: 'muted small' }, l)))),
-    section('By field', table(data.bySpace, 'Field')), section('By group', table(data.byOrg, 'Group')), await utilizationPanel(state.report.from, state.report.to), activity);
+    section(`By ${W()}`, table(data.bySpace, W(false, true))), section('By group', table(data.byOrg, 'Group')), await utilizationPanel(state.report.from, state.report.to), activity);
 }
 
 /* ---------- Add to your calendar ---------- */
@@ -986,7 +1012,7 @@ function parseTable(text) { // CSV or tab separated (paste from a spreadsheet); 
   return lines.slice(1).map((l) => Object.fromEntries(split(l).map((v, i) => [head[i], v])));
 }
 const IMPORTS = {
-  spaces: { label: 'Fields and sections', cols: 'facility, field, section, lights', example: 'facility,field,section,lights\nNorth Complex,Pitch A,North half,yes\nNorth Complex,Pitch A,South half,yes' },
+  spaces: { label: 'Spaces and sections', cols: 'facility, space, section, type, capacity, indoor, lights (only facility and space are needed; type is Field, Court, Pavilion, Gym, Classroom, Multi-purpose room and so on)', example: 'facility,space,section,type,capacity,indoor,lights\nNorth Complex,Pitch A,North half,Field,,,yes\nNorth Complex,Pitch A,South half,Field,,,yes\nNorth Complex,Main pavilion,,Pavilion,120,,\nLincoln Elementary,Gym,,Gym,300,,\nLincoln Elementary,Room 104,,Classroom,30,,' },
   organizations: { label: 'Clubs, schools and teams', cols: 'name, kind', example: 'name,kind\nU10 Boys,club\nSpring-Ford HS,school' },
   members: { label: 'People in each group', cols: 'organization, name, email, role (manager or blank)', example: 'organization,name,email,role\nU10 Boys,Pat Lee,pat@example.com,manager\nU10 Boys,Sam Ortiz,sam@example.com' },
   bookings: { label: 'Existing bookings', cols: 'organization, space, title, date, start, end', example: 'organization,space,title,date,start,end\nU10 Boys,North half,Practice,2027-09-07,17:00,18:30' },
@@ -1037,14 +1063,14 @@ async function rulesPanel() {
   }) }, 'Save rules');
 
   // bookable hours
-  const hSpace = el('select', { class: 'w-m' }, el('option', { value: '' }, 'All fields'), state.spaces.map((x) => el('option', { value: x.id }, x.name)));
+  const hSpace = el('select', { class: 'w-m' }, el('option', { value: '' }, `All ${W(true)}`), state.spaces.map((x) => el('option', { value: x.id }, x.name)));
   const hDays = new Set([0, 1, 2, 3, 4, 5, 6]);
   const dayChips = el('div', { class: 'chips', role: 'group', 'aria-label': 'Days' }, [1, 2, 3, 4, 5, 6, 0].map((n) => el('button', { type: 'button', class: 'chip', 'aria-pressed': 'true', onclick: (e) => {
     hDays.has(n) ? hDays.delete(n) : hDays.add(n); e.currentTarget.setAttribute('aria-pressed', String(hDays.has(n))); } }, WEEKDAYS[n])));
   const opens = el('input', { type: 'time', value: '08:00' }), closes = el('input', { type: 'time', value: '21:00' });
   const enf = level('block', [['block', 'Do not allow outside these hours'], ['warn', 'Flag for the approver']]);
   const hNote = el('input', { type: 'text', placeholder: 'For example: neighbors, no whistles before 9' });
-  const hs = (x) => `${x.space || 'All fields'}: ${x.weekdays.length === 7 ? 'daily' : x.weekdays.map((n) => WEEKDAYS[n]).join(', ')} ${x.opens} to ${x.closes}, ${x.enforcement === 'block' ? 'enforced' : 'flagged'}${x.note ? `, ${x.note}` : ''}`;
+  const hs = (x) => `${x.space || `All ${W(true)}`}: ${x.weekdays.length === 7 ? 'daily' : x.weekdays.map((n) => WEEKDAYS[n]).join(', ')} ${x.opens} to ${x.closes}, ${x.enforcement === 'block' ? 'enforced' : 'flagged'}${x.note ? `, ${x.note}` : ''}`;
   const money_ = el('div', { class: 'affix' }, el('span', {}, '$'), minCov);
   return el('div', { class: 'stack' },
     section('Rules', el('p', { class: 'muted small' }, 'Rules can flag a request for the approver or stop it from being sent.'),
@@ -1101,19 +1127,45 @@ const removeSpace = (s) => guard(async () => {
       toast(`${r.name} removed${r.cancelled ? `, ${r.cancelled} booking${r.cancelled === 1 ? '' : 's'} cancelled` : ''}`); await loadData(); render();
     }) }, 'Remove'), el('button', { class: 'btn alt', onclick: close }, 'Keep it'))));
 });
+// Type, capacity, indoors and lights for one space, in a sheet.
+function kindSelect(value, id) {
+  const groups = [['Outdoor', (k) => k.where === 'out'], ['Indoor', (k) => k.where === 'in'], ['Indoor or outdoor', (k) => k.where === 'either']];
+  return el('select', { id }, groups.map(([label, test]) => el('optgroup', { label }, SPACE_KINDS.filter(test).map((k) => el('option', { value: k.code, selected: k.code === value }, k.label)))));
+}
+function detailsBox(x) {
+  sheet(`${x.name} details`, (close) => {
+    const kind = kindSelect(x.kind);
+    const capacity = el('input', { type: 'number', min: 1, max: 100000, step: 1, inputmode: 'numeric', value: x.capacity ?? '', class: 'w-s' });
+    const indoor = el('input', { type: 'checkbox', id: 'd-indoor', checked: !!x.indoor });
+    const lights = el('input', { type: 'checkbox', id: 'd-lights', checked: !!x.has_lights });
+    const indoorRow = el('label', { for: 'd-indoor', class: 'inline-check' }, indoor, 'Indoors (no sunset rule)');
+    const lightsRow = el('label', { for: 'd-lights', class: 'inline-check' }, lights, 'Has lights for evening use');
+    const sync = () => { const w = kindOf(kind.value).where; if (w !== 'either') indoor.checked = w === 'in'; indoorRow.classList.toggle('hidden', w !== 'either'); lightsRow.classList.toggle('hidden', indoor.checked); };
+    kind.onchange = sync; indoor.onchange = sync; sync();
+    return el('form', { class: 'stack', onsubmit: (e) => { e.preventDefault(); guard(async () => {
+      const cap = capacity.value.trim() ? Number(capacity.value) : null;
+      if (cap !== null && !(Number.isInteger(cap) && cap >= 1)) throw new Error('Capacity is a whole number of people, or leave it blank');
+      await api(`/spaces/${x.id}`, { method: 'PATCH', body: { kind: kind.value, capacity: cap, indoor: indoor.checked, hasLights: !indoor.checked && lights.checked } });
+      toast('Saved'); close(); await loadData(); render();
+    }); } },
+      x.parent_id ? null : field('Type', kind), field('Capacity', capacity, 'Most people allowed at once. Leave blank if it does not matter.'), indoorRow, lightsRow,
+      el('button', { class: 'btn', type: 'submit' }, 'Save'));
+  });
+}
 function fieldCard(s) {
   const sections = state.spaces.filter((x) => x.parent_id === s.id);
-  const lightsToggle = (x) => ({ label: x.has_lights ? 'Mark as no lights' : 'Mark as having lights', icon: 'lightbulb', onSelect: () => guard(async () => { await api(`/spaces/${x.id}`, { method: 'PATCH', body: { hasLights: !x.has_lights } }); toast('Saved'); await loadData(); render(); }) });
-  const actions = (x, kind) => menu(`Actions for ${x.name}`, [
-    { label: `Rename ${kind}`, icon: 'pencil', onSelect: () => renameBox(`Rename ${kind}`, x.name, (name) => api(`/spaces/${x.id}`, { method: 'PATCH', body: { name } })) },
-    lightsToggle(x), 'sep', { label: `Remove ${kind}`, icon: 'x', danger: true, onSelect: () => removeSpace(x) }]);
-  return el('div', { class: 'field-card' }, outlineThumb(s),
-    el('div', { class: 'row between' }, el('b', {}, s.name), actions(s, 'field')),
-    el('span', { class: 'muted small' }, [s.has_lights ? 'Lights' : 'No lights', s.outline ? 'on the map' : 'not on the map yet'].join(', ')),
+  const k = kindOf(s.kind), noun = k.label.toLowerCase();
+  const actions = (x, what) => menu(`Actions for ${x.name}`, [
+    { label: `Rename ${what}`, icon: 'pencil', onSelect: () => renameBox(`Rename ${what}`, x.name, (name) => api(`/spaces/${x.id}`, { method: 'PATCH', body: { name } })) },
+    { label: 'Edit details', icon: 'settings', onSelect: () => detailsBox(x) },
+    'sep', { label: `Remove ${what}`, icon: 'x', danger: true, onSelect: () => removeSpace(x) }]);
+  return el('div', { class: 'field-card' }, k.pitch ? outlineThumb(s) : el('div', { class: `venue-thumb${s.indoor ? ' indoor' : ''}` }, icon(k.icon, { size: 30 })),
+    el('div', { class: 'row between' }, el('b', {}, s.name), actions(s, noun)),
+    el('span', { class: 'muted small' }, [spaceFacts(s), s.indoor ? null : (s.has_lights ? 'lights' : 'no lights'), k.pitch || s.outline ? (s.outline ? 'on the map' : 'not on the map yet') : null].filter(Boolean).join(', ')),
     sections.length ? el('ul', { class: 'plain small' }, sections.map((x) => el('li', { class: 'row between' }, el('span', {}, `Section: ${x.name}`), actions(x, 'section')))) : null);
 }
 
-const SETUP_TABS = [['start', 'Getting started', 'sparkles'], ['fields', 'Fields and map', 'map'], ['people', 'Groups and people', 'users'], ['rules', 'Rules and hours', 'shield-check'], ['money', 'Plan and payments', 'credit-card'], ['import', 'Import', 'upload']];
+const SETUP_TABS = [['start', 'Getting started', 'sparkles'], ['fields', 'Spaces and map', 'map'], ['people', 'Groups and people', 'users'], ['rules', 'Rules and hours', 'shield-check'], ['money', 'Plan and payments', 'credit-card'], ['import', 'Import', 'upload']];
 async function setupView() {
   const [{ facilities }, { organizations }, { hours }] = await Promise.all([api('/facilities'), api('/organizations'), api('/hours')]);
   state.facilities = facilities;
@@ -1122,7 +1174,7 @@ async function setupView() {
   let page;
   if (state.setupTab === 'start') {
     const steps = [
-      ['Add a site', facilities.length > 0, 'fields'], ['Add its fields and sections', state.spaces.length > 0, 'fields'], ['Draw your fields on the map', state.spaces.some((s) => s.outline), 'fields'],
+      ['Add a site', facilities.length > 0, 'fields'], ['Add its fields, courts, pavilions or rooms', state.spaces.length > 0, 'fields'], ['Draw your outdoor spaces on the map', state.spaces.some((s) => s.outline || s.indoor), 'fields'],
       ['Add a club or school', organizations.length > 0, 'people'], ['Set bookable hours', hours.length > 0, 'rules'],
     ];
     const done = steps.filter((s) => s[1]).length;
@@ -1148,18 +1200,45 @@ async function setupView() {
   } else if (state.setupTab === 'fields') {
     const facName = el('input', { type: 'text', placeholder: 'Veterans Park' });
     const spFac = el('select', {}, facilities.map((f) => el('option', { value: f.id }, f.name)));
-    const spParent = el('select', {}, el('option', { value: '' }, 'A whole field'), state.spaces.map((s) => el('option', { value: s.id }, `Section of ${s.name}`)));
+    const spParent = el('select', {}, el('option', { value: '' }, 'Nothing, it stands alone'), state.spaces.map((s) => el('option', { value: s.id }, `Section of ${s.name}`)));
+    const spKind = kindSelect('field', 'sp-kind');
     const spName = el('input', { type: 'text', placeholder: 'Upper field' });
+    const spCap = el('input', { type: 'number', min: 1, max: 100000, step: 1, inputmode: 'numeric', class: 'w-s' });
     const spLights = el('input', { type: 'checkbox', id: 'lights' });
+    const spIndoor = el('input', { type: 'checkbox', id: 'indoor' });
+    const kindWrap = field('Type', spKind), capWrap = field('Capacity (optional)', spCap, 'Most people allowed at once.');
+    const indoorRow = el('label', { for: 'indoor', class: 'inline-check' }, spIndoor, 'Indoors');
+    const lightsRow = el('label', { for: 'lights', class: 'inline-check' }, spLights, 'Has lights');
+    const EXAMPLE = { field: 'Upper field', diamond: 'Diamond 2', court: 'Tennis court 1', track: 'Stadium track', pool: 'Community pool', rink: 'Ice rink', pavilion: 'Main pavilion', park: 'Picnic grove',
+      lot: 'North lot', gym: 'Main gym', classroom: 'Room 104', multipurpose: 'All-purpose room', meeting: 'Board room', auditorium: 'Auditorium', cafeteria: 'Cafeteria', kitchen: 'Teaching kitchen', library: 'Library', other: 'Name it' };
+    const sync = () => {
+      const section = !!spParent.value, w = kindOf(spKind.value).where;
+      kindWrap.classList.toggle('hidden', section); capWrap.classList.toggle('hidden', section);
+      if (w !== 'either') spIndoor.checked = w === 'in';
+      indoorRow.classList.toggle('hidden', section || w !== 'either');
+      lightsRow.classList.toggle('hidden', section ? !!spaceById(spParent.value)?.indoor : spIndoor.checked);
+      spName.placeholder = section ? 'North half' : EXAMPLE[spKind.value];
+    };
+    spParent.onchange = sync; spKind.onchange = sync; spIndoor.onchange = sync; sync();
+    const kinds = kindsInUse();
     page = el('div', { class: 'stack' },
-      section('Fields', state.spaces.length ? facilities.map((f) => el('div', { class: 'stack' }, el('div', { class: 'row between' }, el('h4', { class: 'row' }, icon('map-pin', { size: 18 }), f.name),
+      section(fieldsOnly() ? 'Fields' : 'Spaces', state.spaces.length ? facilities.map((f) => el('div', { class: 'stack' }, el('div', { class: 'row between' }, el('h4', { class: 'row' }, icon('map-pin', { size: 18 }), f.name),
         menu(`Actions for ${f.name}`, [{ label: 'Rename site', icon: 'pencil', onSelect: () => renameBox('Rename site', f.name, (name) => api(`/facilities/${f.id}`, { method: 'PATCH', body: { name } })) }])),
         el('div', { class: 'field-cards' }, state.spaces.filter((s) => s.facility_id === f.id && !s.parent_id).map((s) => fieldCard(s)))))
-        : emptyState('No fields yet', 'Add a site, then its fields. Halves or thirds can be added as sections.')),
-      section('Add a site', el('div', { class: 'row' }, el('label', { class: 'sr-only', for: 'fac-name' }, 'Site name'), Object.assign(facName, { id: 'fac-name' }), el('button', { class: 'btn alt', onclick: () => facName.value && post('/facilities', { name: facName.value }, 'Site added') }, 'Add site'))),
-      facilities.length ? section('Add a field or section', el('div', { class: 'grid2' }, field('Site', spFac), field('Part of', spParent)), field('Name', spName),
-        el('label', { for: 'lights', class: 'inline-check' }, spLights, 'Has lights'),
-        el('button', { class: 'btn', onclick: () => spName.value && post('/spaces', { facilityId: spFac.value, parentId: spParent.value || null, name: spName.value, hasLights: spLights.checked }, 'Added') }, 'Add')) : null,
+        : emptyState('Nothing to book yet', 'Add a site, like a park or a school, then what people can book there: fields, courts, pavilions, gyms, classrooms or rooms. Halves or thirds of a field can be added as sections.')),
+      kinds.length > 1 ? el('p', { class: 'muted small' }, `You rent ${kinds.map((k) => k.plural.toLowerCase()).join(', ')}. Set a price per type under Fees.`) : null,
+      section('Add a site', el('p', { class: 'muted small' }, 'A site is a place with an address: a park, a school, a community center.'),
+        el('div', { class: 'row' }, el('label', { class: 'sr-only', for: 'fac-name' }, 'Site name'), Object.assign(facName, { id: 'fac-name' }), el('button', { class: 'btn alt', onclick: () => facName.value && post('/facilities', { name: facName.value }, 'Site added') }, 'Add site'))),
+      facilities.length ? section('Add something to book', el('div', { class: 'grid2' }, field('Site', spFac), field('Part of', spParent)), el('div', { class: 'grid2' }, kindWrap, field('Name', spName)), capWrap,
+        indoorRow, lightsRow,
+        el('button', { class: 'btn', onclick: () => {
+          if (!spName.value.trim()) return toast('Enter a name', true);
+          const cap = spCap.value.trim() ? Number(spCap.value) : null;
+          if (cap !== null && !(Number.isInteger(cap) && cap >= 1)) return toast('Capacity is a whole number of people', true);
+          const body = { facilityId: spFac.value, parentId: spParent.value || null, name: spName.value.trim(), hasLights: spLights.checked };
+          if (!spParent.value) Object.assign(body, { kind: spKind.value, capacity: cap, indoor: spIndoor.checked });
+          post('/spaces', body, 'Added');
+        } }, 'Add')) : null,
       mapEditor());
   } else if (state.setupTab === 'people') {
     const orgName = el('input', { type: 'text', placeholder: 'U12 Girls' });
@@ -1171,7 +1250,7 @@ async function setupView() {
     const sName = el('input', { type: 'text', placeholder: 'Full name' });
     const sEmail = el('input', { type: 'email', placeholder: 'email@example.com' });
     const sSite = el('select', {}, el('option', { value: '' }, 'All sites'), facilities.map((f) => el('option', { value: f.id }, `Only ${f.name}`)));
-    const sRole = el('select', { onchange: () => { sSiteWrap.classList.toggle('hidden', sRole.value === 'tenant_admin'); } }, el('option', { value: 'approver' }, 'Approver'), el('option', { value: 'grounds' }, 'Groundskeeper (closes fields)'), el('option', { value: 'tenant_admin' }, 'Admin'));
+    const sRole = el('select', { onchange: () => { sSiteWrap.classList.toggle('hidden', sRole.value === 'tenant_admin'); } }, el('option', { value: 'approver' }, 'Approver'), el('option', { value: 'grounds' }, `Groundskeeper (closes ${W(true)})`), el('option', { value: 'tenant_admin' }, 'Admin'));
     const sSiteWrap = field('Which sites', sSite);
     page = el('div', { class: 'stack' },
       section('Clubs, schools and teams',
@@ -1182,7 +1261,7 @@ async function setupView() {
       organizations.length ? section('Invite someone to a group', el('p', { class: 'muted small' }, 'They get an email with a sign-in link.'),
         el('div', { class: 'grid2' }, field('Group', mOrg), field('What they can do', mRole)), el('div', { class: 'grid2' }, field('Name', mName), field('Email', mEmail)),
         el('button', { class: 'btn', onclick: () => post(`/organizations/${mOrg.value}/members`, { fullName: mName.value, email: mEmail.value, role: mRole.value }, 'Invitation sent') }, icon('mail', { size: 18 }), 'Send invitation')) : null,
-      section('Staff', el('p', { class: 'muted small' }, 'Approvers review requests; limit one to a site and they only see that site. Groundskeepers can close fields but not approve. Admins can also change setup.'),
+      section('Staff', el('p', { class: 'muted small' }, 'Approvers review requests; limit one to a site and they only see that site. Groundskeepers can close spaces but not approve. Admins can also change setup.'),
         el('div', { class: 'grid2' }, field('Name', sName), field('Email', sEmail)), el('div', { class: 'grid2' }, field('Role', sRole), sSiteWrap),
         el('button', { class: 'btn alt', onclick: () => post('/staff', { fullName: sName.value, email: sEmail.value, role: sRole.value, ...(sSite.value && sRole.value !== 'tenant_admin' ? { facilityId: sSite.value } : {}) }, 'Invitation sent') }, 'Add staff')));
   } else if (state.setupTab === 'rules') page = await rulesPanel();
@@ -1207,7 +1286,7 @@ async function platformView() {
     el('div', { class: 'head' }, el('div', {}, el('h2', {}, 'Owner console'), el('p', { class: 'page-sub small' }, 'Every group on CanWeUseIt. Only the emails in PLATFORM_ADMIN_EMAILS see this.'))),
     el('div', { class: 'owner-stats' }, [['Groups', tenants.length], ...byPlan, ['Plan value a month', money(monthly)]].map(([l, v]) => el('div', { class: 'stat panel' }, el('b', {}, String(v)), el('span', { class: 'muted small' }, l)))),
     tenants.length ? el('div', { class: 'panel table-wrap', role: 'region', 'aria-label': 'All groups', tabindex: '0' }, el('table', { class: 'tbl' },
-      el('thead', {}, el('tr', {}, ['Group', 'Plan', 'Sites', 'Fields', 'Clubs', 'Waiting', 'Admins', 'Started', ''].map((h) => el('th', { scope: 'col' }, h)))),
+      el('thead', {}, el('tr', {}, ['Group', 'Plan', 'Sites', 'Spaces', 'Clubs', 'Waiting', 'Admins', 'Started', ''].map((h) => el('th', { scope: 'col' }, h)))),
       el('tbody', {}, tenants.map((t) => el('tr', {},
         el('td', {}, el('b', {}, t.name), el('div', { class: 'muted small' }, t.slug)),
         el('td', {}, el('select', { 'aria-label': `Plan for ${t.name}`, onchange: (e) => guard(async () => { await api(`/platform/tenants/${t.id}`, { method: 'PATCH', body: { plan: e.target.value } }); toast(`${t.name} is now on ${e.target.selectedOptions[0].textContent.split(',')[0]}`); render(); }) },
@@ -1238,7 +1317,7 @@ async function render() {
         el('button', { class: 'btn ghost small', onclick: signOut }, icon('log-out', { size: 16 }), 'Sign out')), el('main', { id: 'main' }, content)));
     }
     if (!ids.length) return $app.replaceChildren(el('main', { class: 'public-wrap' }, el('a', { class: 'public-brand', href: '/' }, brandMark(32), 'CanWeUseIt'),
-      emptyState('You are not part of a group yet', 'Ask your club, school or league admin to add you. Running the fields yourself? Start your own group.', el('a', { class: 'btn', href: '/signup' }, 'Start a group'))));
+      emptyState('You are not part of a group yet', 'Ask your club, school or league admin to add you. Running the fields or buildings yourself? Start your own group.', el('a', { class: 'btn', href: '/signup' }, 'Start a group'))));
     const saved = remembered();
     state.tenant = { id: ids.includes(saved) ? saved : ids[0] };
     state.tenant = await api('/tenant');

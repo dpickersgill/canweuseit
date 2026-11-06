@@ -99,7 +99,7 @@ authed.put('/booking-dates/:id/team-slots', async (req, res, next) => {
       for (const [n, s] of list.entries()) {
         const at = `Row ${n + 1}`;
         if (!teams.has(s?.teamId)) throw err(400, `${at}: choose one of your teams`);
-        if (!allowed.has(s?.spaceId)) throw err(400, `${at}: pick the booked field or a section of it`);
+        if (!allowed.has(s?.spaceId)) throw err(400, `${at}: pick the booked space or a section of it`);
         if (!isTime(s?.start) || !isTime(s?.end)) throw err(400, `${at}: times look like 17:30`);
         const from = localToUtc(day, s.start, d.timezone), to = localToUtc(day, s.end, d.timezone);
         if (to <= from) throw err(400, `${at}: the end must be after the start`);
@@ -155,7 +155,7 @@ authed.post('/booking-dates/:id/no-show', async (req, res, next) => {
     if (scope === undefined) throw err(403, 'Only staff or groundskeepers can mark no-shows');
     const out = await withTenant(req.tenantId, async (c) => {
       const d = await loadDate(c, req.params.id);
-      if (scope && !scope.includes(d.facility_id)) throw err(403, 'That field is outside your site');
+      if (scope && !scope.includes(d.facility_id)) throw err(403, 'That space is outside your site');
       if (d.status !== 'confirmed') throw err(409, 'Only approved dates can be marked');
       if (new Date(d.starts_at) > new Date()) throw err(409, 'You can only mark a no-show once the time has started');
       const v = req.body?.noShow !== false;

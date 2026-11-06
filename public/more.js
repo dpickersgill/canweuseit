@@ -1,5 +1,6 @@
 // Seasons, billing, applications, activity: the views added for larger facilities.
 import { payButton, refundBox } from './gaps.js';
+import { SPACE_KINDS, kindOf } from './kinds.js';
 import { el, api, state, toast, guard, render, go, section, field, cap, dayLabel, hhmm, ymd, isAdmin, isStaff, myOrgIds, canManageOrg, parseTable } from './app.js';
 
 export const money = (c) => `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -101,19 +102,22 @@ export async function billingView() {
 }
 
 function feeRates(rates, admin) {
-  const target = el('select', { 'aria-label': 'Applies to' }, el('option', { value: '' }, 'Every field'),
-    (state.facilities || []).map((f) => el('option', { value: `f:${f.id}` }, `All of ${f.name}`)), state.spaces.map((s) => el('option', { value: `s:${s.id}` }, s.name)));
+  const kinds = SPACE_KINDS.filter((k) => state.spaces.some((s) => !s.parent_id && s.kind === k.code));
+  const target = el('select', { 'aria-label': 'Applies to' }, el('option', { value: '' }, 'Everything'),
+    kinds.length > 1 ? el('optgroup', { label: 'Every one of a type' }, kinds.map((k) => el('option', { value: `k:${k.code}` }, `All ${k.plural.toLowerCase()}`))) : null,
+    el('optgroup', { label: 'One site' }, (state.facilities || []).map((f) => el('option', { value: `f:${f.id}` }, `All of ${f.name}`))),
+    el('optgroup', { label: 'One space' }, state.spaces.map((s) => el('option', { value: `s:${s.id}` }, s.name))));
   const kind = el('select', { 'aria-label': 'Group type' }, el('option', { value: '' }, 'Any group'), ['club', 'school', 'league', 'other'].map((k) => el('option', { value: k }, `${cap(k)} groups`)));
   const price = el('input', { type: 'number', min: '0', step: '0.01', placeholder: '50.00', 'aria-label': 'Dollars per hour' });
   const note = el('input', { type: 'text', placeholder: 'Note, for example school rate', 'aria-label': 'Note', maxlength: 200 });
-  const label = (r) => `${r.space || r.facility || 'Every field'}${r.orgKind ? `, ${r.orgKind} groups` : ''}: ${money(r.centsPerHour)} per hour${r.note ? ` (${r.note})` : ''}`;
-  return section('Rates', el('p', { class: 'muted small' }, 'The most specific rate wins: a field beats a facility, which beats a general rate. Fees are by the hour. Payments are recorded by hand for now.'),
+  const label = (r) => `${r.space || (r.spaceKind ? `All ${kindOf(r.spaceKind).plural.toLowerCase()}` : null) || r.facility || 'Everything'}${r.orgKind ? `, ${r.orgKind} groups` : ''}: ${money(r.centsPerHour)} per hour${r.note ? ` (${r.note})` : ''}`;
+  return section('Rates', el('p', { class: 'muted small' }, 'The most specific rate wins: one space beats a type (like all pavilions), which beats a site, which beats a general rate. Fees are by the hour.'),
     rates.length ? el('ul', { class: 'plain' }, rates.map((r) => el('li', { class: 'row between' }, el('span', {}, label(r)),
       admin ? el('button', { class: 'btn danger small', onclick: () => guard(async () => { await api(`/fee-rates/${r.id}`, { method: 'DELETE' }); render(); }) }, 'Remove') : null))) : el('p', { class: 'muted small' }, 'No rates yet.'),
     admin ? el('div', { class: 'stack' }, el('div', { class: 'grid2' }, field('Applies to', target), field('For', kind)), el('div', { class: 'grid2' }, field('Dollars per hour', price), field('Note', note)),
       el('button', { class: 'btn alt', onclick: () => guard(async () => {
         const b = { centsPerHour: Math.round(Number(price.value) * 100), note: note.value || undefined, orgKind: kind.value || undefined };
-        if (target.value.startsWith('f:')) b.facilityId = target.value.slice(2); else if (target.value.startsWith('s:')) b.spaceId = target.value.slice(2);
+        if (target.value.startsWith('k:')) b.spaceKind = target.value.slice(2); else if (target.value.startsWith('f:')) b.facilityId = target.value.slice(2); else if (target.value.startsWith('s:')) b.spaceId = target.value.slice(2);
         if (!(Number(price.value) >= 0) || price.value === '') throw new Error('Enter a price per hour');
         await api('/fee-rates', { method: 'POST', body: b }); toast('Rate added'); render();
       }) }, 'Add rate')) : null);

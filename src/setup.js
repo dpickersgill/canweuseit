@@ -8,7 +8,8 @@ import { notify } from './notify.js';
 export const setupRouter = Router();
 setupRouter.use(requireUser, requireTenant);
 
-const KINDS = ['field', 'room', 'court', 'other'];
+import { KIND_CODES as KINDS, defaultIndoor } from '../public/kinds.js';
+const cap = (v) => (v === null || v === '' ? null : Number.isInteger(v) && v >= 1 && v <= 100000 ? v : undefined);
 const requireAdmin = (req, res, next) =>
   hasRole(req, 'tenant_admin') ? next() : res.status(403).json({ error: 'Only a tenant admin can change setup' });
 
@@ -49,23 +50,30 @@ setupRouter.post('/facilities', requireAdmin, async (req, res, next) => {
 
 setupRouter.post('/spaces', requireAdmin, async (req, res, next) => {
   try {
-    const { facilityId, parentId = null, kind = 'field', hasLights = false, bufferMinutes = 0 } = req.body || {};
+    const { facilityId, parentId = null, hasLights = false, bufferMinutes = 0 } = req.body || {};
     const name = cleanName(req.body?.name);
     if (!name || !facilityId) return res.status(400).json({ error: 'name and facilityId are required' });
-    if (!KINDS.includes(kind)) return res.status(400).json({ error: `kind must be one of ${KINDS.join(', ')}` });
+    if (req.body?.kind !== undefined && !KINDS.includes(req.body.kind)) return res.status(400).json({ error: `kind must be one of ${KINDS.join(', ')}` });
+    const capacity = cap(req.body?.capacity ?? null);
+    if (capacity === undefined) return res.status(400).json({ error: 'capacity must be a whole number from 1 to 100000' });
     if (!Number.isInteger(bufferMinutes) || bufferMinutes < 0 || bufferMinutes > 240)
       return res.status(400).json({ error: 'bufferMinutes must be a whole number from 0 to 240' });
 
     const row = await withTenant(req.tenantId, async (c) => {
+      let kind = req.body?.kind || 'field', indoor;
       if (parentId) {
-        const { rows } = await c.query('select facility_id from space where id = $1', [parentId]);
+        const { rows } = await c.query('select facility_id, kind, indoor from space where id = $1', [parentId]);
         if (!rows.length) return { error: 'Parent space not found' };
         if (rows[0].facility_id !== facilityId) return { error: 'A sub-space must be in the same facility as its parent' };
+        // a section is part of its parent: same kind and same indoors/outdoors unless told otherwise
+        if (!req.body?.kind) kind = rows[0].kind;
+        indoor = req.body?.indoor === undefined ? rows[0].indoor : !!req.body.indoor;
       } else await checkLimit(c, req.tenantId, 'field');
+      if (indoor === undefined) indoor = req.body?.indoor === undefined ? defaultIndoor(kind) : !!req.body.indoor;
       return (await c.query(
-        `insert into space (tenant_id, facility_id, parent_id, name, kind, has_lights, buffer_minutes)
-         values ($1,$2,$3,$4,$5,$6,$7) returning id, facility_id, parent_id, name, kind, has_lights, buffer_minutes`,
-        [req.tenantId, facilityId, parentId, name, kind, !!hasLights, bufferMinutes])).rows[0];
+        `insert into space (tenant_id, facility_id, parent_id, name, kind, has_lights, buffer_minutes, indoor, capacity)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id, facility_id, parent_id, name, kind, has_lights, buffer_minutes, indoor, capacity`,
+        [req.tenantId, facilityId, parentId, name, kind, !indoor && !!hasLights, bufferMinutes, indoor, capacity])).rows[0];
     });
     if (row.error) return res.status(400).json(row);
     res.status(201).json(row);
@@ -83,6 +91,9 @@ setupRouter.patch('/spaces/:id', requireAdmin, async (req, res, next) => {
     const add = (col, v) => { vals.push(v); sets.push(`${col} = $${vals.length}`); };
     if (b.name !== undefined) { const n = cleanName(b.name); if (!n) return res.status(400).json({ error: 'invalid name' }); add('name', n); }
     if (b.hasLights !== undefined) add('has_lights', !!b.hasLights);
+    if (b.kind !== undefined) { if (!KINDS.includes(b.kind)) return res.status(400).json({ error: `kind must be one of ${KINDS.join(', ')}` }); add('kind', b.kind); }
+    if (b.indoor !== undefined) add('indoor', !!b.indoor);
+    if (b.capacity !== undefined) { const v = cap(b.capacity); if (v === undefined) return res.status(400).json({ error: 'capacity must be a whole number from 1 to 100000' }); add('capacity', v); }
     if (b.active !== undefined) add('active', !!b.active);
     if (b.outline !== undefined) {
       const ok = b.outline === null || (Array.isArray(b.outline) && b.outline.length >= 3 && b.outline.length <= 200
@@ -98,7 +109,7 @@ setupRouter.patch('/spaces/:id', requireAdmin, async (req, res, next) => {
     vals.push(req.params.id);
     const row = await withTenant(req.tenantId, async (c) =>
       (await c.query(`update space set ${sets.join(', ')} where id = $${vals.length}
-                      returning id, facility_id, parent_id, name, kind, has_lights, buffer_minutes, active, outline`, vals)).rows[0]);
+                      returning id, facility_id, parent_id, name, kind, has_lights, buffer_minutes, active, outline, indoor, capacity`, vals)).rows[0]);
     row ? res.json(row) : res.status(404).json({ error: 'Space not found' });
   } catch (err) {
     if (err.code === '22P02') return res.status(404).json({ error: 'Space not found' });
@@ -124,14 +135,14 @@ setupRouter.patch('/facilities/:id', requireAdmin, async (req, res, next) => {
   } catch (err) { if (err.code === '22P02') return res.status(404).json({ error: 'Facility not found' }); next(err); }
 });
 
-// Remove a field (or a section). It is archived, not erased: past bookings, invoices and reports still point at it.
+// Remove a space (or a section). It is archived, not erased: past bookings, invoices and reports still point at it.
 // Its sections go with it, and future bookings on any of them are cancelled and the requesters told. ?preview=1 only counts.
 setupRouter.delete('/spaces/:id', requireAdmin, async (req, res, next) => {
   try {
     const preview = req.query.preview === '1';
     const out = await withTenant(req.tenantId, async (c) => {
       const sp = (await c.query('select id, name from space where id = $1 and active', [req.params.id])).rows[0];
-      if (!sp) return { status: 404, body: { error: 'Field not found' } };
+      if (!sp) return { status: 404, body: { error: 'Space not found' } };
       const ids = (await c.query('select space_descendants($1) as id', [sp.id])).rows.map((r) => r.id);
       const dates = (await c.query(
         `select bd.id, bd.status, bd.starts_at, r.title, r.requested_by from booking_date bd join request r on r.id = bd.request_id
@@ -154,5 +165,5 @@ setupRouter.delete('/spaces/:id', requireAdmin, async (req, res, next) => {
         text: `${out.sp.name} has been taken out of use. ${list.length} upcoming date${list.length === 1 ? ' was' : 's were'} cancelled for: ${[...new Set(list.map((d) => d.title))].join(', ')}. Please request another field.`,
         sms: `${out.sp.name} is no longer available; ${list.length} upcoming date${list.length === 1 ? '' : 's'} cancelled.` })));
     }
-  } catch (err) { if (err.code === '22P02') return res.status(404).json({ error: 'Field not found' }); next(err); }
+  } catch (err) { if (err.code === '22P02') return res.status(404).json({ error: 'Space not found' }); next(err); }
 });

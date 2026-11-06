@@ -107,7 +107,7 @@ requestsRouter.post('/requests', async (req, res, next) => {
     const { organizationId } = req.body || {};
     const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
     const items = Array.isArray(req.body?.items) ? req.body.items : [{ spaceId: req.body?.spaceId, weekly: req.body?.weekly, dates: req.body?.dates, label: req.body?.label }];
-    if (!organizationId || !title || title.length > 200 || !items.length || items.length > 60 || items.some((i) => !i?.spaceId)) return res.status(400).json({ error: 'organizationId, title and at least one field are required' });
+    if (!organizationId || !title || title.length > 200 || !items.length || items.length > 60 || items.some((i) => !i?.spaceId)) return res.status(400).json({ error: 'organizationId, title and at least one space are required' });
     if (!memberOf(req, organizationId) && !hasRole(req, 'tenant_admin')) return res.status(403).json({ error: 'You cannot request on behalf of this organization' });
 
     let tz;
@@ -180,7 +180,7 @@ requestsRouter.post('/requests', async (req, res, next) => {
       }
     }
   } catch (err) {
-    if (badUuid(err) || err.code === '23503') return res.status(400).json({ error: 'Invalid organization, field or round' });
+    if (badUuid(err) || err.code === '23503') return res.status(400).json({ error: 'Invalid organization, space or round' });
     next(err);
   }
 });

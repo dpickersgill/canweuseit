@@ -4,7 +4,7 @@ import { writeFileSync } from 'node:fs';
 const names = ['calendar', 'calendar-days', 'list', 'inbox', 'circle-plus', 'users', 'cloud-rain', 'trophy', 'receipt', 'chart-column', 'settings', 'menu',
   'chevron-left', 'chevron-right', 'chevron-down', 'ellipsis', 'check', 'x', 'clock', 'triangle-alert', 'circle-check', 'circle-x', 'lock', 'lightbulb',
   'map-pin', 'search', 'log-out', 'user', 'sun', 'moon', 'monitor', 'move', 'calendar-x', 'undo-2', 'file-text', 'pencil', 'mail', 'external-link',
-  'download', 'filter', 'shield-check', 'credit-card', 'layers', 'map', 'upload', 'arrow-right', 'arrow-left', 'sparkles', 'bell', 'ban'];
+  'download', 'filter', 'shield-check', 'credit-card', 'layers', 'map', 'upload', 'arrow-right', 'arrow-left', 'sparkles', 'bell', 'ban', 'land-plot', 'diamond', 'dribbble', 'route', 'waves', 'snowflake', 'tent', 'trees', 'square-parking', 'dumbbell', 'school', 'door-open', 'presentation', 'theater', 'utensils', 'chef-hat', 'library', 'users-round', 'house'];
 const out = {};
 for (const n of names) {
   const mod = await import(`../node_modules/lucide/dist/esm/icons/${n}.js`);

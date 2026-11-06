@@ -6,7 +6,7 @@ if (!r.ok) { document.getElementById('intro').textContent = 'This page was not f
 else {
   const { name } = await r.json();
   document.title = `Apply to ${name}`;
-  document.getElementById('intro').textContent = `${name} approves every request for its fields. Tell us about your group and we will email you when it is approved.`;
+  document.getElementById('intro').textContent = `${name} approves every request for its fields, courts and rooms. Tell us about your group and we will email you when it is approved.`;
   const f = {}; const msg = el('p', { role: 'status' });
   const inp = (k, label, type = 'text', req = true) => { f[k] = el(type === 'textarea' ? 'textarea' : 'input', { id: k, type: type === 'textarea' ? null : type, required: req ? '' : null, maxlength: type === 'textarea' ? 1000 : 120 }); return el('div', { class: 'field' }, el('label', { for: k }, label), f[k]); };
   f.kind = el('select', { id: 'kind' }, ['club', 'school', 'league', 'other'].map((k) => el('option', { value: k }, k[0].toUpperCase() + k.slice(1))));
@@ -17,6 +17,6 @@ else {
     msg.textContent = res.ok ? d.message : (d.error || 'Something went wrong');
     if (res.ok) form.replaceChildren(msg);
   } }, inp('name', 'Group name'), el('div', { class: 'field' }, el('label', { for: 'kind' }, 'Kind'), f.kind), inp('contactName', 'Your name'), inp('email', 'Your email', 'email'),
-    inp('notes', 'Anything we should know (ages, teams, fields you use today)', 'textarea', false), el('button', { class: 'btn', type: 'submit' }, 'Send application'), msg);
+    inp('notes', 'Anything we should know (ages, teams, what you book today)', 'textarea', false), el('button', { class: 'btn', type: 'submit' }, 'Send application'), msg);
   box.append(form);
 }

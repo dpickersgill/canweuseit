@@ -110,7 +110,7 @@ test('queue filters, bulk decisions, CSV export and the audit log', async () => 
   const csv = await call('GET', '/export/bookings.csv', approver);
   assert.match(csv.headers.get('content-type'), /text\/csv/);
   const text = await csv.text();
-  assert.match(text.split('\r\n')[0], /^organization,title,team,facility,field,date,start,end,status,permit,warning$/);
+  assert.match(text.split('\r\n')[0], /^organization,title,team,facility,space,date,start,end,status,permit,warning$/);
   assert.ok(text.includes(`'=HYPERLINK`), 'formulas are defused'); assert.ok(!/(^|,)=HYPERLINK/.test(text));
   assert.equal((await call('GET', '/export/bookings.csv', coach)).status, 403);
   assert.equal((await call('GET', '/export/usage.csv?from=2028-03-01&to=2028-04-30', admin)).status, 200);

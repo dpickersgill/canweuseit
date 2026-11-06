@@ -24,7 +24,7 @@ function fold(line) { // lines longer than 75 bytes are continued on the next li
 }
 
 export function buildIcs(name, events) {
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//CanWeUseIt//Field bookings//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//CanWeUseIt//Bookings//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
     `X-WR-CALNAME:${esc(name)}`, 'REFRESH-INTERVAL;VALUE=DURATION:PT1H', 'X-PUBLISHED-TTL:PT1H'];
   for (const e of events) {
     lines.push('BEGIN:VEVENT', `UID:${e.id}@canweuseit.com`, `DTSTAMP:${stamp(new Date())}`, `DTSTART:${stamp(e.startsAt)}`, `DTEND:${stamp(e.endsAt)}`,
@@ -54,7 +54,7 @@ calendarPublic.get('/calendar/:file', async (req, res, next) => {
             and ($1::uuid is null or r.organization_id = $1) order by bd.starts_at limit 5000`, [feed.organization_id])).rows;
       return { name: t.name, events: ev };
     });
-    res.set('Content-Type', 'text/calendar; charset=utf-8').set('Cache-Control', 'private, max-age=300').send(buildIcs(`${name} field schedule`, events));
+    res.set('Content-Type', 'text/calendar; charset=utf-8').set('Cache-Control', 'private, max-age=300').send(buildIcs(`${name} schedule`, events));
   } catch (err) { next(err); }
 });
 

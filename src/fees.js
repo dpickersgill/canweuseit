@@ -3,6 +3,7 @@ import { withTenant } from './db.js';
 import { requireUser, requireTenant, hasRole } from './tenant.js';
 import { toCsv } from './admin.js';
 import { nextInvoiceNumber } from './invoicelib.js';
+import { KIND_CODES } from '../public/kinds.js';
 
 export const feesRouter = Router();
 feesRouter.use(requireUser, requireTenant);
@@ -12,11 +13,12 @@ const requireAdmin = (req, res, next) => (hasRole(req, 'tenant_admin') ? next() 
 const bad = (e) => e.code === '22P02';
 const money = (cents) => `$${(cents / 100).toFixed(2)}`;
 
-// ---- hourly rates. The most specific one wins: a field beats a facility, a group kind beats "everyone".
+// ---- hourly rates. The most specific one wins: one space beats a kind of space ("pavilions"), which beats a site;
+// a group kind beats "everyone".
 feesRouter.get('/fee-rates', requireStaff, async (req, res, next) => {
   try {
     const rows = await withTenant(req.tenantId, async (c) => (await c.query(
-      `select r.id, r.cents_per_hour as "centsPerHour", r.org_kind as "orgKind", r.note, r.space_id as "spaceId", s.name as space, r.facility_id as "facilityId", f.name as facility
+      `select r.id, r.cents_per_hour as "centsPerHour", r.org_kind as "orgKind", r.space_kind as "spaceKind", r.note, r.space_id as "spaceId", s.name as space, r.facility_id as "facilityId", f.name as facility
          from fee_rate r left join space s on s.id = r.space_id left join facility f on f.id = r.facility_id order by f.name nulls first, s.name nulls first, r.org_kind nulls first`)).rows);
     res.json({ rates: rows });
   } catch (err) { next(err); }
@@ -25,13 +27,14 @@ feesRouter.post('/fee-rates', requireAdmin, async (req, res, next) => {
   try {
     const b = req.body || {};
     if (!Number.isInteger(b.centsPerHour) || b.centsPerHour < 0 || b.centsPerHour > 10000000) return res.status(400).json({ error: 'centsPerHour must be a whole number of cents' });
-    if (b.spaceId && b.facilityId) return res.status(400).json({ error: 'Choose a field or a facility, not both' });
+    if ([b.spaceId, b.facilityId, b.spaceKind].filter(Boolean).length > 1) return res.status(400).json({ error: 'Choose one space, one kind of space or one site, not more' });
+    if (b.spaceKind && !KIND_CODES.includes(b.spaceKind)) return res.status(400).json({ error: 'Unknown kind of space' });
     if (b.orgKind && !['club', 'school', 'league', 'other'].includes(b.orgKind)) return res.status(400).json({ error: 'Unknown group kind' });
     const row = await withTenant(req.tenantId, async (c) => (await c.query(
-      'insert into fee_rate (tenant_id, facility_id, space_id, org_kind, cents_per_hour, note) values ($1,$2,$3,$4,$5,$6) returning id',
-      [req.tenantId, b.facilityId || null, b.spaceId || null, b.orgKind || null, b.centsPerHour, b.note ? String(b.note).slice(0, 200) : null])).rows[0]);
+      'insert into fee_rate (tenant_id, facility_id, space_id, org_kind, cents_per_hour, note, space_kind) values ($1,$2,$3,$4,$5,$6,$7) returning id',
+      [req.tenantId, b.facilityId || null, b.spaceId || null, b.orgKind || null, b.centsPerHour, b.note ? String(b.note).slice(0, 200) : null, b.spaceKind || null])).rows[0]);
     res.status(201).json(row);
-  } catch (err) { if (bad(err) || err.code === '23503') return res.status(400).json({ error: 'Unknown field or facility' }); next(err); }
+  } catch (err) { if (bad(err) || err.code === '23503') return res.status(400).json({ error: 'Unknown space or site' }); next(err); }
 });
 feesRouter.delete('/fee-rates/:id', requireAdmin, async (req, res, next) => {
   try {
@@ -46,7 +49,7 @@ async function price(c, requestId) {
   if (!r) return null;
   const { rows: rates } = await c.query('select * from fee_rate');
   const { rows: dates } = await c.query(
-    `select bd.space_id, s.name as space, s.facility_id, extract(epoch from (bd.ends_at - bd.starts_at)) / 3600 as hours
+    `select bd.space_id, s.name as space, s.facility_id, s.kind, extract(epoch from (bd.ends_at - bd.starts_at)) / 3600 as hours
        from booking_date bd join space s on s.id = bd.space_id where bd.request_id = $1 and bd.status = 'confirmed'`, [requestId]);
   const lines = new Map(); let unpriced = 0;
   for (const d of dates) {
@@ -54,8 +57,9 @@ async function price(c, requestId) {
     for (const rt of rates) {
       if (rt.space_id && rt.space_id !== d.space_id) continue;
       if (rt.facility_id && rt.facility_id !== d.facility_id) continue;
+      if (rt.space_kind && rt.space_kind !== d.kind) continue;
       if (rt.org_kind && rt.org_kind !== r.kind) continue;
-      const score = (rt.space_id ? 4 : 0) + (rt.facility_id ? 2 : 0) + (rt.org_kind ? 1 : 0);
+      const score = (rt.space_id ? 8 : 0) + (rt.space_kind ? 4 : 0) + (rt.facility_id ? 2 : 0) + (rt.org_kind ? 1 : 0);
       if (score > bestScore) { best = rt; bestScore = score; }
     }
     if (!best) { unpriced++; continue; }
@@ -74,7 +78,7 @@ feesRouter.post('/requests/:id/invoice', requireStaff, async (req, res, next) =>
     const out = await withTenant(req.tenantId, async (c) => {
       const p = await price(c, req.params.id);
       if (!p) return { status: 404, body: { error: 'Request not found' } };
-      if (!p.lines.length) return { status: 400, body: { error: 'No fees apply. Add a rate for these fields first', unpriced: p.unpriced } };
+      if (!p.lines.length) return { status: 400, body: { error: 'No fees apply. Add a rate for these spaces first', unpriced: p.unpriced } };
       if (req.body?.preview) return { status: 200, body: { preview: true, lines: p.lines, totalCents: p.totalCents, unpriced: p.unpriced } };
       const number = await nextInvoiceNumber(c, req.tenantId);
       const inv = (await c.query(

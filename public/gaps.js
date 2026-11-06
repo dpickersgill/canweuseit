@@ -43,15 +43,15 @@ export function mapPicker({ selected, onSelect }) {
   return host;
 }
 
-// Admins: draw each field's outline, and set where each site is.
+// Admins: draw each outdoor space's outline, and set where each site is.
 export function mapEditor() {
   const facs = state.facilities || [];
-  if (!facs.length) return section('Field map', el('p', { class: 'muted' }, 'Add a site and its fields first.'));
+  if (!facs.length) return section('Map', el('p', { class: 'muted' }, 'Add a site and what can be booked there first.'));
   let fid = facs[0].id, m = null, drawing = null;
   const pick = el('select', { 'aria-label': 'Site', onchange: (e) => { fid = e.target.value; draw(); } }, facs.map((f) => el('option', { value: f.id }, f.name)));
   const host = el('div', { class: 'fieldmap tall' });
   const list = el('ul', { class: 'plain' });
-  const help = el('p', { class: 'muted small', role: 'status' }, 'Zoom in to the site, then choose Draw next to a field and tap each corner of it on the map.');
+  const help = el('p', { class: 'muted small', role: 'status' }, 'Zoom in to the site, then choose Draw next to a field, court or pavilion and tap each corner of it on the map.');
   const layers = [];
   const paint = () => {
     layers.splice(0).forEach((l) => l.remove());
@@ -64,7 +64,7 @@ export function mapEditor() {
     const r = await api(`/spaces/${s.id}`, { method: 'PATCH', body: { outline: pts } });
     Object.assign(state.spaces.find((x) => x.id === s.id), { outline: r.outline });
     toast(pts ? `${s.name} outlined` : `${s.name} outline removed`); stop(); paint(); drawList();
-    help.textContent = 'Saved. Choose Draw next to another field, or Redraw to fix one.';
+    help.textContent = 'Saved. Choose Draw next to another one, or Redraw to fix one.';
   });
   const start = (s) => {
     stop();
@@ -77,7 +77,7 @@ export function mapEditor() {
     help.textContent = `Drawing ${s.name}: tap each corner on the map.`;
     drawList();
   };
-  const drawList = () => list.replaceChildren(...state.spaces.filter((s) => s.facility_id === fid).map((s) => el('li', { class: 'row between' },
+  const drawList = () => list.replaceChildren(...state.spaces.filter((s) => s.facility_id === fid && !s.indoor).map((s) => el('li', { class: 'row between' },
     el('span', {}, `${s.parent_id ? '  Section: ' : ''}${s.name}${s.outline ? '' : ' (no outline yet)'}`),
     drawing?.s.id === s.id ? el('span', { class: 'row' },
       el('button', { class: 'btn small', disabled: drawing.pts.length < 3, onclick: () => save(s, drawing.pts) }, 'Finish'),
@@ -87,8 +87,8 @@ export function mapEditor() {
         s.outline ? el('button', { class: 'btn danger small', onclick: () => save(s, null) }, 'Clear') : null))));
   const draw = () => { stop(); if (m) { m.remove(); m = null; } whenShown(host, () => { m = baseMap(host, { facilityId: fid }); paint(); }); drawList(); };
   draw();
-  return section('Field map',
-    el('p', { class: 'muted small' }, 'Outlines let groups pick a field by tapping it on a satellite view. Sections can be drawn inside their field.'),
+  return section('Map',
+    el('p', { class: 'muted small' }, 'Outlines let groups pick a field, court or pavilion by tapping it on a satellite view. Sections can be drawn inside their field. Indoor rooms are not drawn.'),
     el('div', { class: 'row' }, pick, el('button', { class: 'btn alt small', onclick: () => guard(async () => {
       const c = m.getCenter(); await api(`/facilities/${fid}`, { method: 'PATCH', body: { latitude: Math.round(c.lat * 1e6) / 1e6, longitude: Math.round(c.lng * 1e6) / 1e6 } });
       Object.assign(state.facilities.find((f) => f.id === fid), { latitude: c.lat, longitude: c.lng }); toast('Site location saved'); }) }, 'Save this view as the site location')),
@@ -213,7 +213,7 @@ export function planPanel() {
       el('a', { class: 'btn alt small', href: `mailto:${state.tenant.contact}?subject=${encodeURIComponent(`Move ${state.tenant.name} to ${x.name}`)}` }, `Ask for ${x.name}`)))));
   });
   return section('Your plan', el('p', {}, el('b', {}, p.name), p.priceCents ? `, ${money(p.priceCents)} a month` : ', no charge'),
-    el('p', { class: 'muted small' }, `${lim(p.facilities, p.maxFacilities, 'sites')}, ${lim(p.fields, p.maxFields, 'fields')}. ${p.onlinePayments ? 'Card payments included.' : 'Card payments come with Community and League.'} Clubs and schools that request time never pay.`),
+    el('p', { class: 'muted small' }, `${lim(p.facilities, p.maxFacilities, 'sites')}, ${lim(p.fields, p.maxFields, 'spaces')}. ${p.onlinePayments ? 'Card payments included.' : 'Card payments come with Community and League.'} Clubs and schools that request time never pay.`),
     others);
 }
 
@@ -223,8 +223,8 @@ export async function utilizationPanel(from, to) {
   const bar = (pct) => el('span', { class: 'meter', role: 'img', 'aria-label': `${pct} percent` }, el('span', { style: `width:${Math.min(pct, 100)}%` }));
   return el('div', { class: 'stack' },
     section('How much of the open time was used',
-      u.assumedHours ? el('p', { class: 'muted small' }, `Fields with no opening hours set are counted as open ${u.assumedHours[0]} to ${u.assumedHours[1]}. Set real hours under Setup for a truer figure.`) : null,
-      el('div', { class: 'table-wrap', role: 'region', 'aria-label': 'Field use', tabindex: '0' }, el('table', { class: 'tbl' }, el('thead', {}, el('tr', {}, ['Field', 'Open hours', 'Used', ''].map((h) => el('th', { scope: 'col' }, h)))),
+      u.assumedHours ? el('p', { class: 'muted small' }, `Spaces with no opening hours set are counted as open ${u.assumedHours[0]} to ${u.assumedHours[1]}. Set real hours under Setup for a truer figure.`) : null,
+      el('div', { class: 'table-wrap', role: 'region', 'aria-label': 'Space use', tabindex: '0' }, el('table', { class: 'tbl' }, el('thead', {}, el('tr', {}, ['Space', 'Open hours', 'Used', ''].map((h) => el('th', { scope: 'col' }, h)))),
         el('tbody', {}, u.bySpace.map((s) => el('tr', {}, el('td', {}, s.name), el('td', {}, String(s.openHours)), el('td', {}, `${s.usedHours} h, ${s.percent}%`), el('td', {}, bar(s.percent)))))))),
     section('How well each group used its time',
       el('p', { class: 'muted small' }, `Use = approved hours they actually used, out of everything they were given (including time they gave back).${u.noShowLimit || u.minUsePct ? ` Rules: ${[u.noShowLimit ? `${u.noShowLimit} no-shows a year` : null, u.minUsePct ? `${u.minUsePct}% minimum use` : null].filter(Boolean).join(', ')}. Groups over the no-show limit are placed last in the next season's allocation.` : ' Set use-it-or-lose-it rules under Setup.'}`),
@@ -247,7 +247,7 @@ export async function profileView() {
       el('div', {}, el('label', { for: 'pf-name' }, 'Your name'), name),
       el('div', {}, el('label', {}, 'Email'), el('p', {}, p.email)),
       el('div', {}, el('label', { for: 'pf-phone' }, 'Mobile number (optional)'), phone),
-      el('label', { for: 'pf-sms', class: 'row inline-check' }, opt, el('span', {}, 'Text me when a field closes or my booking is cancelled, and when a slot I am waiting for opens. Message and data rates may apply. Reply STOP to stop.')),
+      el('label', { for: 'pf-sms', class: 'row inline-check' }, opt, el('span', {}, 'Text me when a space I booked closes or my booking is cancelled, and when a slot I am waiting for opens. Message and data rates may apply. Reply STOP to stop.')),
       p.textsAvailable ? null : el('p', { class: 'muted small' }, 'Texts are not switched on for this server yet; your choice is saved for when they are.'),
       el('div', {}, el('button', { class: 'btn', type: 'submit' }, 'Save'))));
 }

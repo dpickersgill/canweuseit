@@ -36,7 +36,7 @@ signupPublic.post('/signup-api', async (req, res, next) => {
       if (e.code === 'P0001') return res.status(429).json({ error: 'Too many sign-ups from here today. Try again tomorrow' });
       throw e;
     }
-    await issueLoginLink(email, { subject: `Finish setting up ${name} on CanWeUseIt`, intro: `Your group "${name}" is ready on the Free plan. Click to sign in and add your fields (valid for 15 minutes, works once):` });
+    await issueLoginLink(email, { subject: `Finish setting up ${name} on CanWeUseIt`, intro: `Your group "${name}" is ready on the Free plan. Click to sign in and add your fields, courts, pavilions or rooms (valid for 15 minutes, works once):` });
     res.status(201).json({ ok: true, message: 'Check your email for a link to sign in.' });
   } catch (err) { next(err); }
 });
