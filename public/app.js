@@ -1,6 +1,6 @@
 // CanWeUseIt web app. No build step; all text goes through el() so nothing user-supplied is ever parsed as HTML.
 const $app = document.getElementById('app');
-const state = { me: null, tenants: [], tenant: null, view: 'schedule', spaces: [], orgs: [], weekStart: null, spaceFilter: '', reqFilter: null };
+const state = { me: null, tenants: [], tenant: null, view: 'schedule', spaces: [], orgs: [], weekStart: null, month: null, calMode: 'month', selectedDay: null, prefill: null, compliance: [], report: null, spaceFilter: '', reqFilter: null };
 
 /* ---------- helpers ---------- */
 function el(tag, attrs = {}, ...kids) {
@@ -89,68 +89,242 @@ function loginScreen() {
 
 function shell(content) {
   const tabs = [['schedule', 'Schedule'], ['requests', 'Requests'], ['new', 'Request time']];
+  if (isStaff() || orgAdminIds().length) tabs.push(['groups', 'Groups']);
+  if (isStaff()) tabs.push(['closures', 'Closures'], ['reports', 'Usage']);
   if (isAdmin()) tabs.push(['setup', 'Setup']);
   return el('div', {},
     el('header', { class: 'bar' }, el('div', { class: 'bar-in' },
       el('div', { class: 'bar-top' }, el('h1', {}, state.tenant.name),
         el('div', { class: 'who' }, state.me.user.full_name,
-          el('button', { class: 'linkbtn', onclick: async () => { await fetch('/auth/logout', { method: 'POST' }); state.me = null; render(); } }, 'Sign out'))),
+          el('button', { class: 'linkbtn', onclick: async () => { await fetch('/auth/logout', { method: 'POST' }); state.me = null; state.tenant = null; render(); } }, 'Sign out'))),
       el('nav', { class: 'tabs', 'aria-label': 'Main' }, tabs.map(([id, label]) =>
         el('button', { 'aria-current': state.view === id ? 'page' : null, onclick: () => go(id) }, label))))),
     el('main', {}, content));
 }
 function go(view) { state.view = view; render(); }
 
-/* Schedule */
+/* ---------- small shared pieces ---------- */
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const cap = (t) => t[0].toUpperCase() + t.slice(1);
+const hhmm = (d) => fmt(d, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const minutesOfDay = (d) => { const [h, m] = hhmm(d).split(':').map(Number); return (h % 24) * 60 + m; };
+const hourLabel = (h) => fmt(`2027-01-15T${String(h).padStart(2, '0')}:00:00Z`.replace(/Z$/, 'Z'), { hour: 'numeric', timeZone: 'UTC' });
+const isFuture = (d) => new Date(d) > new Date();
+const ancestors = (id) => { const out = []; let s = state.spaces.find((x) => x.id === id); while (s?.parent_id) { out.push(s.parent_id); s = state.spaces.find((x) => x.id === s.parent_id); } return out; };
+const related = (a, b) => a === b || ancestors(a).includes(b) || ancestors(b).includes(a);
+const canManageOrg = (orgId) => isStaff() || orgAdminIds().includes(orgId);
+
+function statusBadge(status) { return el('span', { class: 'badge ' + status }, cap(status)); }
+function section(title, ...kids) { return el('section', { class: 'panel stack' }, el('h3', {}, title), ...kids); }
+function field(label, input, hint) { return el('div', { class: 'field' }, el('label', {}, label), input, hint ? el('p', { class: 'muted small' }, hint) : null); }
+
+/* a small inline form: time and place for a date (used to move a booking) */
+function moveForm(d, done) {
+  const date = el('input', { type: 'date', value: ymd(d.startsAt), 'aria-label': 'New date' });
+  const start = el('input', { type: 'time', value: hhmm(d.startsAt), 'aria-label': 'New start' });
+  const end = el('input', { type: 'time', value: hhmm(d.endsAt), 'aria-label': 'New end' });
+  return el('form', { class: 'inline-form', onsubmit: (e) => { e.preventDefault(); guard(async () => {
+    const r = await api(`/booking-dates/${d.id}/move`, { method: 'POST', body: { date: date.value, startTime: start.value, endTime: end.value } });
+    toast(r.status === 'pending' ? 'Change sent for approval' : 'Moved'); done();
+  }); } }, date, start, end, el('button', { class: 'btn small', type: 'submit' }, 'Move'));
+}
+
+/* ---------- Schedule: month / week, with a day panel ---------- */
+function monthGrid(first) { // list of local dates covering the month, whole weeks, Monday first
+  const gridStart = mondayOf(first);
+  const [y, m] = first.split('-').map(Number);
+  const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const offset = (new Date(`${first}T12:00:00Z`).getUTCDay() + 6) % 7;
+  const n = Math.ceil((offset + dim) / 7) * 7;
+  return { gridStart, n, days: Array.from({ length: n }, (_, i) => addDays(gridStart, i)) };
+}
+const monthStartOf = (d) => `${d.slice(0, 7)}-01`;
+const shiftMonth = (first, k) => { const [y, m] = first.split('-').map(Number); const d = new Date(Date.UTC(y, m - 1 + k, 1)); return d.toISOString().slice(0, 10); };
+
+function chip(b) {
+  return el('button', { type: 'button', class: 'chip-b' + (b.status === 'pending' ? ' pending' : ''), style: `background:${tint(b.organizationId)}`,
+    title: `${b.organization}: ${b.title} (${b.space})`, onclick: (e) => { e.stopPropagation(); selectDay(ymd(b.startsAt)); } },
+  `${hhmm(b.startsAt).replace(/^0/, '')} ${b.organization}`);
+}
+function selectDay(d) { state.selectedDay = d; render().then(() => document.getElementById('day-panel')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })); }
+
 async function scheduleView() {
-  const main = el('div', {});
   const today = ymd(new Date());
   if (!state.weekStart) state.weekStart = mondayOf(today);
-  const { bookings } = await api(`/bookings?start=${state.weekStart}&days=7`);
-  const shown = bookings.filter((b) => !state.spaceFilter || b.spaceId === state.spaceFilter);
+  if (!state.month) state.month = monthStartOf(today);
+  const month = state.calMode === 'month';
+  let from, days;
+  if (month) { const g = monthGrid(state.month); from = g.gridStart; days = g.n; } else { from = state.weekStart; days = 7; }
+  const [{ bookings }, { closures }] = await Promise.all([api(`/bookings?start=${from}&days=${days}`), api('/closures')]);
+  const shown = bookings.filter((b) => !state.spaceFilter || related(b.spaceId, state.spaceFilter));
+  const closedOn = (d) => closures.filter((c) => (!state.spaceFilter || related(c.spaceId, state.spaceFilter)) && ymd(c.startsAt) <= d && ymd(new Date(new Date(c.endsAt) - 1)) >= d);
+
+  const modeBtn = (m, label) => el('button', { class: 'chip', 'aria-pressed': String(state.calMode === m), onclick: () => { state.calMode = m; render(); } }, label);
   const spaceSel = el('select', { 'aria-label': 'Space', onchange: (e) => { state.spaceFilter = e.target.value; render(); } },
-    el('option', { value: '' }, 'All spaces'), state.spaces.map((s) => el('option', { value: s.id, selected: s.id === state.spaceFilter }, s.name)));
-  const last = addDays(state.weekStart, 6);
-  main.append(el('div', { class: 'head' },
-    el('h2', {}, `${fmt(state.weekStart + 'T12:00:00Z', { month: 'short', day: 'numeric' })} to ${fmt(last + 'T12:00:00Z', { month: 'short', day: 'numeric', year: 'numeric' })}`),
-    el('div', { class: 'row' },
-      el('button', { class: 'btn alt small', onclick: () => { state.weekStart = addDays(state.weekStart, -7); render(); } }, 'Previous week'),
-      el('button', { class: 'btn alt small', onclick: () => { state.weekStart = mondayOf(today); render(); } }, 'This week'),
-      el('button', { class: 'btn alt small', onclick: () => { state.weekStart = addDays(state.weekStart, 7); render(); } }, 'Next week'),
-      spaceSel)));
-  const week = el('div', { class: 'week' });
-  for (let i = 0; i < 7; i++) {
-    const d = addDays(state.weekStart, i);
+    el('option', { value: '' }, 'All spaces'), state.spaces.map((s) => el('option', { value: s.id, selected: s.id === state.spaceFilter }, (s.parent_id ? '  ' : '') + s.name)));
+  const title = month ? fmt(`${state.month}T12:00:00Z`, { month: 'long', year: 'numeric', timeZone: 'UTC' })
+    : `${fmt(`${state.weekStart}T12:00:00Z`, { month: 'short', day: 'numeric', timeZone: 'UTC' })} to ${fmt(`${addDays(state.weekStart, 6)}T12:00:00Z`, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}`;
+  const step = (k) => { if (month) state.month = shiftMonth(state.month, k); else state.weekStart = addDays(state.weekStart, 7 * k); render(); };
+  const main = el('div', {});
+  main.append(el('div', { class: 'head' }, el('h2', {}, title),
+    el('div', { class: 'row' }, el('div', { class: 'chips' }, modeBtn('month', 'Month'), modeBtn('week', 'Week')),
+      el('button', { class: 'btn alt small', 'aria-label': month ? 'Previous month' : 'Previous week', onclick: () => step(-1) }, '‹'),
+      el('button', { class: 'btn alt small', onclick: () => { state.month = monthStartOf(today); state.weekStart = mondayOf(today); state.selectedDay = today; render(); } }, 'Today'),
+      el('button', { class: 'btn alt small', 'aria-label': month ? 'Next month' : 'Next week', onclick: () => step(1) }, '›'),
+      spaceSel, el('button', { class: 'btn alt small', onclick: () => go('calendar') }, 'Add to your calendar'))));
+
+  const cell = (d, inMonth) => {
     const items = shown.filter((b) => ymd(b.startsAt) === d);
-    week.append(el('section', { class: 'day' + (d === today ? ' today' : '') },
-      el('h3', {}, dayLabel(`${d}T12:00:00Z`)),
-      items.length ? items.map((b) => el('div', { class: 'slot', style: `background:${tint(b.organizationId)}` },
-        el('b', {}, `${fmt(b.startsAt, { hour: 'numeric', minute: '2-digit' })} to ${fmt(b.endsAt, { hour: 'numeric', minute: '2-digit' })}`),
-        `${b.space}`, el('br'), `${b.organization}: ${b.title}`)) : el('p', { class: 'empty' }, 'Nothing booked')));
+    const closed = closedOn(d);
+    const dots = items.slice(0, 6).map((b) => el('i', { class: 'dot' + (b.status === 'pending' ? ' pending' : ''), style: `background:${tint(b.organizationId)}` }));
+    return el('div', { class: 'cell' + (d === today ? ' today' : '') + (inMonth ? '' : ' other') + (state.selectedDay === d ? ' sel' : ''), role: 'button', tabindex: '0',
+      'aria-label': `${dayLabel(`${d}T12:00:00Z`)}, ${items.length} booking${items.length === 1 ? '' : 's'}${closed.length ? ', closed' : ''}`,
+      onclick: () => selectDay(d), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectDay(d); } } },
+    el('span', { class: 'num' }, String(Number(d.slice(8)))),
+    closed.length ? el('span', { class: 'closed-tag' }, 'Closed') : null,
+    el('div', { class: 'chips-b' }, items.slice(0, 3).map(chip), items.length > 3 ? el('span', { class: 'more' }, `+${items.length - 3} more`) : null),
+    el('div', { class: 'dots' }, dots, items.length > 6 ? el('span', { class: 'more' }, '+') : null));
+  };
+
+  if (month) {
+    const g = monthGrid(state.month);
+    main.append(el('div', { class: 'cal' }, el('div', { class: 'cal-head' }, ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((n) => el('div', {}, n))),
+      el('div', { class: 'cal-grid' }, g.days.map((d) => cell(d, d.slice(0, 7) === state.month.slice(0, 7))))));
+  } else {
+    main.append(el('div', { class: 'week' }, Array.from({ length: 7 }, (_, i) => {
+      const d = addDays(state.weekStart, i); const items = shown.filter((b) => ymd(b.startsAt) === d); const closed = closedOn(d);
+      return el('section', { class: 'day' + (d === today ? ' today' : '') + (state.selectedDay === d ? ' sel' : '') },
+        el('h3', {}, el('button', { class: 'linkbtn dayhead', onclick: () => selectDay(d) }, dayLabel(`${d}T12:00:00Z`))),
+        closed.map((c) => el('p', { class: 'closed-note' }, `Closed: ${c.space}, ${c.reason}`)),
+        items.length ? items.map((b) => el('div', { class: 'slot' + (b.status === 'pending' ? ' pending' : ''), style: `background:${tint(b.organizationId)}` },
+          el('b', {}, timeRange(b.startsAt, b.endsAt)), b.space, el('br'), `${b.organization}: ${b.title}`, b.status === 'pending' ? el('em', {}, ' (waiting for approval)') : null))
+          : el('p', { class: 'empty' }, 'Nothing booked'));
+    })));
   }
-  main.append(week);
-  if (!bookings.length) main.append(el('p', { class: 'muted' }, 'No approved bookings this week. Use Request time to ask for a slot.'));
+  main.append(el('p', { class: 'muted small legend' }, 'Dashed outline means waiting for approval. Only approvers and the requesting group see those.'));
+  if (state.selectedDay) main.append(dayPanel(state.selectedDay, bookings, closures, today));
+  else main.append(el('p', { class: 'muted' }, 'Tap a day to see what is free and to ask for time.'));
   return main;
 }
 
-/* Requests */
-function datesList(r, canCancel) {
+/* One day, one lane per space: booked time is filled, free time is a button that starts a request. */
+function dayPanel(day, bookings, closures, today) {
+  const START = 6, END = 22, span = (END - START) * 60;
+  const dayBookings = bookings.filter((b) => ymd(b.startsAt) === day);
+  const dayClosures = closures.filter((c) => ymd(c.startsAt) <= day && ymd(new Date(new Date(c.endsAt) - 1)) >= day);
+  const past = day < today;
+  const pct = (m) => `${Math.max(0, Math.min(100, ((m - START * 60) / span) * 100))}%`;
+  const range = (a, b) => { // clip to this day, in minutes
+    const sM = ymd(a) < day ? 0 : minutesOfDay(a);
+    const eM = ymd(new Date(new Date(b) - 1)) > day ? 24 * 60 : minutesOfDay(b) || 24 * 60;
+    return [sM, eM];
+  };
+  const lanes = [];
+  const walk = (parentId, depth) => {
+    for (const s of state.spaces.filter((x) => (x.parent_id || null) === parentId).sort((a, b) => a.name.localeCompare(b.name))) { lanes.push([s, depth]); walk(s.id, depth + 1); }
+  };
+  const shownSpaces = state.spaceFilter ? null : true;
+  walk(null, 0);
+  const laneEls = lanes.filter(([s]) => shownSpaces || related(s.id, state.spaceFilter)).map(([s, depth]) => {
+    const own = dayBookings.filter((b) => b.spaceId === s.id);
+    const shared = dayBookings.filter((b) => b.spaceId !== s.id && related(b.spaceId, s.id));
+    const shut = dayClosures.filter((c) => related(c.spaceId, s.id));
+    const busy = [...own, ...shared, ...shut].map((b) => range(b.startsAt, b.endsAt));
+    const cells = [];
+    if (!past) for (let h = START; h < END; h++) {
+      if (busy.some(([a, z]) => a < (h + 1) * 60 && z > h * 60)) continue;
+      cells.push(el('button', { type: 'button', class: 'free', style: `left:${pct(h * 60)};width:${100 / (END - START)}%`,
+        'aria-label': `Request ${s.name} at ${hourLabel(h)}`, title: `Request ${s.name} from ${hourLabel(h)}`,
+        onclick: () => { state.prefill = { spaceId: s.id, date: day, start: `${String(h).padStart(2, '0')}:00`, end: `${String(Math.min(h + 2, 23)).padStart(2, '0')}:00` }; go('new'); } }));
+    }
+    const block = (b, cls, label) => { const [a, z] = range(b.startsAt, b.endsAt);
+      return el('div', { class: 'blk ' + cls, style: `left:${pct(a)};width:calc(${pct(z)} - ${pct(a)});${cls === 'own' ? `background:${tint(b.organizationId)}` : ''}`, title: label }, el('span', {}, label)); };
+    return el('div', { class: 'lane', style: `--depth:${depth}` },
+      el('div', { class: 'lane-name' }, s.name, s.has_lights ? el('span', { class: 'tag dark' }, 'Lights') : null),
+      el('div', { class: 'bar-track' }, cells,
+        shut.map((c) => block(c, 'shut', `Closed: ${c.reason}`)),
+        shared.map((b) => block(b, 'shared', `${b.space} in use`)),
+        own.map((b) => block(b, 'own' + (b.status === 'pending' ? ' pending' : ''), `${b.organization}`))));
+  });
+  const hourTicks = el('div', { class: 'ticks' }, Array.from({ length: (END - START) / 2 + 1 }, (_, i) => el('span', { style: `left:${(i * 2 * 100) / (END - START)}%` }, hourLabel(START + i * 2))));
+
+  const list = dayBookings.map((b) => {
+    const manage = canManageOrg(b.organizationId) && b.status !== 'cancelled';
+    const slot = el('div', { class: 'item' });
+    slot.append(el('div', { class: 'item-main' }, el('b', {}, timeRange(b.startsAt, b.endsAt)), ` ${b.space}`, el('br'), `${b.organization}: ${b.title}`, ' ', statusBadge(b.status === 'confirmed' ? 'confirmed' : 'pending')));
+    if (manage && isFuture(b.endsAt)) {
+      const moveHost = el('div', {});
+      slot.append(el('div', { class: 'actions' },
+        el('button', { class: 'btn alt small', onclick: () => moveHost.replaceChildren(moveHost.firstChild ? [] : moveForm(b, () => render())) }, 'Move'),
+        el('button', { class: 'btn danger small', onclick: () => guard(async () => {
+          const note = isStaff() ? prompt('Skip this date? Add a reason for the requester (optional).', '') : (confirm('Skip this date? The space becomes free for others.') ? '' : null);
+          if (note === null) return;
+          await api(`/booking-dates/${b.id}/cancel`, { method: 'POST', body: { note } }); toast('Date skipped'); render();
+        }) }, 'Skip this date')), moveHost);
+    }
+    return slot;
+  });
+  const panel = el('section', { class: 'panel stack', id: 'day-panel' },
+    el('div', { class: 'head tight' }, el('h3', {}, fmt(`${day}T12:00:00Z`, { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' })),
+      el('div', { class: 'row' }, !past ? el('button', { class: 'btn small', onclick: () => { state.prefill = { date: day, spaceId: state.spaceFilter || '' }; go('new'); } }, 'Request time this day') : null,
+        el('button', { class: 'btn alt small', onclick: () => { state.selectedDay = null; render(); } }, 'Close'))),
+    dayClosures.map((c) => el('p', { class: 'closed-note' }, `Closed: ${c.space}. ${c.reason}`)),
+    el('div', { class: 'lanes' }, el('div', { class: 'lane head-lane' }, el('div', { class: 'lane-name' }), hourTicks), laneEls),
+    !past ? el('p', { class: 'muted small' }, 'Tap an open hour to start a request. Striped time means a part or the whole of that field is already in use.') : null,
+    list.length ? el('div', { class: 'items' }, list) : el('p', { class: 'muted' }, 'Nothing booked this day.'));
+  return panel;
+}
+
+/* ---------- Requests ---------- */
+function insuranceBanner(orgIds) {
+  const bad = (state.compliance || []).filter((o) => orgIds.includes(o.id) && o.status !== 'ok');
+  if (!bad.length) return null;
+  const word = { missing: 'has no insurance on file', expiring: 'has insurance expiring soon', expired: 'has expired insurance' };
+  return el('div', { class: 'notice' }, bad.map((o) => el('p', {}, `${o.name} ${word[o.status]}${o.expiresOn ? ` (${o.expiresOn})` : ''}. `,
+    el('button', { class: 'linkbtn', onclick: () => go('groups') }, 'Add it here'), '.')));
+}
+
+function datesList(r) {
   const all = r.dates;
   const box = el('ul', { class: 'dates' });
+  const canManage = canManageOrg(r.organization_id) || r.mine;
   const draw = (limit) => {
-    box.replaceChildren(...all.slice(0, limit).map((d) => el('li', {},
-      el('span', { class: 'when' }, `${dayLabel(d.startsAt)}, ${timeRange(d.startsAt, d.endsAt)}`),
-      d.conflict ? el('span', { class: 'badge conflict' }, 'Space already booked') : null,
-      el('span', { class: 'badge ' + d.status }, d.status[0].toUpperCase() + d.status.slice(1)),
-      canCancel && d.status === 'confirmed' ? el('button', { class: 'btn danger small', onclick: () => guard(async () => {
-        if (!confirm('Cancel this date? The space becomes free for others.')) return;
-        await api(`/booking-dates/${d.id}/cancel`, { method: 'POST' }); toast('Date cancelled'); render();
-      }) }, 'Cancel date') : null)));
+    box.replaceChildren(...all.slice(0, limit).map((d) => {
+      const moveHost = el('div', { class: 'grow' });
+      return el('li', {},
+        el('span', { class: 'when' }, `${dayLabel(d.startsAt)}, ${timeRange(d.startsAt, d.endsAt)}`),
+        d.conflict ? el('span', { class: 'badge conflict' }, 'Space already booked') : null,
+        statusBadge(d.status),
+        d.warning ? el('span', { class: 'warn-text' }, d.warning) : null,
+        canManage && ['confirmed', 'pending'].includes(d.status) && isFuture(d.endsAt) && r.status !== 'declined' ? el('span', { class: 'row' },
+          el('button', { class: 'btn alt small', onclick: () => moveHost.replaceChildren(moveHost.firstChild ? [] : moveForm(d, () => render())) }, 'Move'),
+          el('button', { class: 'btn danger small', onclick: () => guard(async () => {
+            if (!confirm('Skip this date?')) return;
+            await api(`/booking-dates/${d.id}/cancel`, { method: 'POST', body: {} }); toast('Date skipped'); render();
+          }) }, 'Skip')) : null, moveHost);
+    }));
     if (all.length > limit) box.append(el('li', {}, el('button', { class: 'linkbtn', onclick: () => draw(999) }, `Show all ${all.length} dates`)));
   };
   draw(6);
   return box;
 }
+
+function decisionBox(r, decision) {
+  const note = el('textarea', { placeholder: decision === 'approve' ? 'Note for the requester (optional)' : 'Why? The requester will see this (optional)', maxlength: 500, 'aria-label': 'Note' });
+  return el('form', { class: 'stack note-box', onsubmit: (e) => { e.preventDefault(); guard(async () => {
+    const d = await api(`/requests/${r.id}/decision`, { method: 'POST', body: { decision, note: note.value } });
+    toast(decision === 'approve' ? (d.flagged ? `${d.confirmed} confirmed, ${d.flagged} conflicts` : `Approved, ${d.confirmed} dates confirmed`) : 'Request declined'); render();
+  }); } }, note, el('div', { class: 'actions' }, el('button', { class: 'btn' + (decision === 'decline' ? ' danger' : ''), type: 'submit' }, decision === 'approve' ? 'Confirm approval' : 'Confirm decline')));
+}
+
+function editBox(r) {
+  const title = el('input', { type: 'text', value: r.title, maxlength: 200, 'aria-label': 'Title' });
+  const notes = el('textarea', { 'aria-label': 'Notes' }, r.notes || '');
+  return el('form', { class: 'stack note-box', onsubmit: (e) => { e.preventDefault(); guard(async () => {
+    await api(`/requests/${r.id}`, { method: 'PATCH', body: { title: title.value, notes: notes.value } }); toast('Saved'); render();
+  }); } }, title, notes, el('div', { class: 'actions' }, el('button', { class: 'btn small', type: 'submit' }, 'Save')));
+}
+
 async function requestsView() {
   const staff = isStaff();
   if (state.reqFilter == null) state.reqFilter = staff ? 'pending' : '';
@@ -158,53 +332,77 @@ async function requestsView() {
   const filters = [['pending', 'Waiting'], ['approved', 'Approved'], ['declined', 'Declined'], ['', 'All']];
   const wrap = el('div', {}, el('div', { class: 'head' }, el('h2', {}, staff ? 'Requests to review' : 'Your requests'),
     el('div', { class: 'chips' }, filters.map(([v, l]) => el('button', { class: 'chip', 'aria-pressed': String(state.reqFilter === v), onclick: () => { state.reqFilter = v; render(); } }, l)))));
+  if (!staff) wrap.append(insuranceBanner(myOrgIds()));
   if (!requests.length) wrap.append(el('div', { class: 'panel empty-big' }, el('h3', {}, state.reqFilter === 'pending' ? 'Nothing waiting' : 'No requests here'),
     el('p', { class: 'muted' }, staff ? 'New requests from clubs and schools show up here.' : 'Use Request time to ask for a slot.')));
-  const canCancelFor = (r) => staff || orgAdminIds().includes(r.organization_id);
   for (const r of requests) {
     const conflicts = r.dates.filter((d) => d.conflict).length;
+    const warned = r.dates.filter((d) => d.warning && ['pending', 'flagged'].includes(d.status)).length;
+    const box = el('div', {});
+    const open = (node) => box.replaceChildren(box.dataset.k === node.dataset.k ? [] : node);
+    const toggle = (key, make) => () => { if (box.dataset.k === key) { box.dataset.k = ''; box.replaceChildren(); } else { box.dataset.k = key; box.replaceChildren(make()); } };
+    const live = ['pending', 'approved'].includes(r.status);
     wrap.append(el('article', { class: 'panel card' },
       el('div', { class: 'card-head' },
         el('div', {}, el('h3', {}, r.title), el('p', { class: 'muted small' }, `${r.organization} asking for ${r.space}${staff ? `, priority ${r.priority_snapshot}` : ''}`)),
-        el('span', { class: 'badge ' + r.status }, r.status[0].toUpperCase() + r.status.slice(1))),
+        statusBadge(r.status)),
       r.notes ? el('p', {}, r.notes) : null,
+      r.decisionNote && r.status !== 'pending' ? el('p', { class: 'decision-note' }, el('b', {}, 'Note from the approver: '), r.decisionNote) : null,
       conflicts && r.status === 'pending' ? el('p', { class: 'small', style: 'color:var(--flag)' }, `${conflicts} of ${r.dates.length} dates are already taken. Approving will confirm the free dates and mark these as conflicts.`) : null,
-      datesList(r, canCancelFor(r)),
-      staff && r.status === 'pending' ? el('div', { class: 'actions' },
-        el('button', { class: 'btn', onclick: () => guard(async () => {
-          const d = await api(`/requests/${r.id}/decision`, { method: 'POST', body: { decision: 'approve' } });
-          toast(d.flagged ? `${d.confirmed} confirmed, ${d.flagged} conflicts` : `Approved, ${d.confirmed} dates confirmed`); render();
-        }) }, 'Approve'),
-        el('button', { class: 'btn danger', onclick: () => guard(async () => {
-          if (!confirm('Decline this request?')) return;
-          await api(`/requests/${r.id}/decision`, { method: 'POST', body: { decision: 'decline' } }); toast('Request declined'); render();
-        }) }, 'Decline')) : null));
+      warned && r.status === 'pending' && staff ? el('p', { class: 'small', style: 'color:var(--flag)' }, `${warned} date${warned === 1 ? ' breaks' : 's break'} a booking rule. See the notes on each date.`) : null,
+      datesList(r),
+      el('div', { class: 'actions' },
+        staff && r.status === 'pending' ? [el('button', { class: 'btn', onclick: toggle('a', () => decisionBox(r, 'approve')) }, 'Approve'),
+          el('button', { class: 'btn danger', onclick: toggle('d', () => decisionBox(r, 'decline')) }, 'Decline')] : null,
+        (r.mine || canManageOrg(r.organization_id)) && live ? el('button', { class: 'btn alt small', onclick: toggle('e', () => editBox(r)) }, 'Edit title or notes') : null,
+        (r.mine || canManageOrg(r.organization_id)) && live ? el('button', { class: 'btn danger small', onclick: () => guard(async () => {
+          if (!confirm(r.status === 'approved' ? 'Withdraw this request? Every future date is released.' : 'Withdraw this request?')) return;
+          await api(`/requests/${r.id}/withdraw`, { method: 'POST' }); toast('Request withdrawn'); render();
+        }) }, 'Withdraw') : null,
+        ['declined', 'cancelled'].includes(r.status) && (r.mine || canManageOrg(r.organization_id) || myOrgIds().includes(r.organization_id)) ? el('button', { class: 'btn alt small', onclick: () => {
+          const first = r.dates[0]; state.prefill = { spaceId: r.space_id, orgId: r.organization_id, title: r.title, notes: r.notes || '', date: ymd(first.startsAt), start: hhmm(first.startsAt), end: hhmm(first.endsAt) }; go('new');
+        } }, 'Request again') : null),
+      box));
   }
   return wrap;
 }
 
-/* New request */
+/* ---------- Request time ---------- */
 const DOW = [['Mon', 1], ['Tue', 2], ['Wed', 3], ['Thu', 4], ['Fri', 5], ['Sat', 6], ['Sun', 0]];
-function newRequestView() {
+async function newRequestView() {
   const orgs = state.orgs.filter((o) => isAdmin() || myOrgIds().includes(o.id));
   if (!orgs.length) return el('div', { class: 'panel empty-big' }, el('h3', {}, 'No organization yet'),
     el('p', { class: 'muted' }, 'Ask the group admin to add you to your club, school or team before requesting time.'));
-  const f = { spaceId: '', repeat: false, days: new Set() };
+  const pre = state.prefill || {}; state.prefill = null;
+  const { hours } = await api('/hours');
+  const f = { spaceId: pre.spaceId || '', repeat: false, days: new Set() };
+  const hint = el('p', { class: 'muted small', role: 'status' });
+  const describe = () => {
+    const sp = state.spaces.find((s) => s.id === f.spaceId);
+    const rules = hours.filter((h) => !h.spaceId || (f.spaceId && related(h.spaceId, f.spaceId)));
+    const parts = [];
+    if (sp && !sp.has_lights && state.tenant.daylightRule !== 'off' && state.tenant.daylightRule) parts.push('This field has no lights, so time must end before sunset.');
+    for (const h of rules) parts.push(`${h.space || 'All spaces'}: ${h.weekdays.length === 7 ? 'daily' : h.weekdays.map((n) => WEEKDAYS[n]).join(', ')} ${h.opens} to ${h.closes}${h.note ? ` (${h.note})` : ''}.`);
+    hint.textContent = parts.join(' ');
+  };
   const pickerHost = el('div', {});
-  const drawPicker = () => pickerHost.replaceChildren(pitchPicker(state.spaces, { selected: f.spaceId, onSelect: (s) => { f.spaceId = s.id; drawPicker(); } }));
-  drawPicker();
-  const org = el('select', { id: 'org' }, orgs.map((o) => el('option', { value: o.id }, o.name)));
-  const title = el('input', { type: 'text', id: 'title', maxlength: 200, placeholder: 'U12 practice', required: true });
-  const notes = el('textarea', { id: 'notes', placeholder: 'Anything the approvers should know' });
-  const date = el('input', { type: 'date', id: 'date', required: true });
+  const drawPicker = () => { pickerHost.replaceChildren(pitchPicker(state.spaces, { selected: f.spaceId, onSelect: (s) => { f.spaceId = s.id; drawPicker(); describe(); } })); };
+  drawPicker(); describe();
+  const org = el('select', { id: 'org' }, orgs.map((o) => el('option', { value: o.id, selected: o.id === pre.orgId }, o.name)));
+  const title = el('input', { type: 'text', id: 'title', maxlength: 200, placeholder: 'U12 practice', required: true, value: pre.title || '' });
+  const notes = el('textarea', { id: 'notes', placeholder: 'Anything the approvers should know' }, pre.notes || '');
+  const date = el('input', { type: 'date', id: 'date', required: true, value: pre.date || '' });
   const until = el('input', { type: 'date', id: 'until' });
-  const start = el('input', { type: 'time', id: 'start', required: true, value: '18:00' });
-  const end = el('input', { type: 'time', id: 'end', required: true, value: '20:00' });
+  const start = el('input', { type: 'time', id: 'start', required: true, value: pre.start || '18:00' });
+  const end = el('input', { type: 'time', id: 'end', required: true, value: pre.end || '20:00' });
   const repeatBox = el('div', { class: 'hidden field' },
     el('label', {}, 'Repeats on'), el('div', { class: 'chips' }, DOW.map(([l, n]) => el('button', { type: 'button', class: 'chip', 'aria-pressed': 'false', onclick: (e) => {
       f.days.has(n) ? f.days.delete(n) : f.days.add(n); e.currentTarget.setAttribute('aria-pressed', String(f.days.has(n))); } }, l))),
     el('div', { class: 'field' }, el('label', { for: 'until' }, 'Last date'), until));
   const rep = el('input', { type: 'checkbox', id: 'rep', onchange: (e) => { f.repeat = e.target.checked; repeatBox.classList.toggle('hidden', !f.repeat); } });
+  const banner = el('div', {});
+  const showBanner = () => banner.replaceChildren(insuranceBanner([org.value]) || []);
+  org.addEventListener('change', showBanner); showBanner();
   const form = el('form', { class: 'stack', onsubmit: (e) => { e.preventDefault(); guard(async () => {
     if (!f.spaceId) throw new Error('Pick a field or section first');
     let weekly;
@@ -216,20 +414,208 @@ function newRequestView() {
       weekly = { startsOn: date.value, until: date.value, weekdays: [dow], startTime: start.value, endTime: end.value };
     }
     const r = await api('/requests', { method: 'POST', body: { organizationId: org.value, spaceId: f.spaceId, title: title.value, notes: notes.value, weekly } });
-    toast(`Request sent, ${r.dateCount} date${r.dateCount === 1 ? '' : 's'}`); state.reqFilter = isStaff() ? 'pending' : ''; go('requests');
+    toast(r.autoApproved ? `Approved automatically, ${r.dateCount} date${r.dateCount === 1 ? '' : 's'}` : `Request sent, ${r.dateCount} date${r.dateCount === 1 ? '' : 's'}${r.warnings ? ` (${r.warnings} flagged for review)` : ''}`);
+    state.reqFilter = isStaff() ? 'pending' : ''; go('requests');
   }); } },
-    el('div', { class: 'panel' }, el('h3', {}, 'Where'), el('p', { class: 'muted small' }, 'Tap the field, or a section of it.'), pickerHost),
-    el('div', { class: 'panel stack' }, el('h3', {}, 'When'),
-      el('div', { class: 'grid2' }, el('div', {}, el('label', { for: 'date' }, 'First date'), date), el('div', {}, el('label', { for: 'org' }, 'Asking for'), org)),
-      el('div', { class: 'grid2' }, el('div', {}, el('label', { for: 'start' }, 'Starts'), start), el('div', {}, el('label', { for: 'end' }, 'Ends'), end)),
-      el('label', { for: 'rep', class: 'row', style: 'font-weight:500' }, rep, 'Repeat every week'), repeatBox),
-    el('div', { class: 'panel stack' }, el('h3', {}, 'What for'),
-      el('div', {}, el('label', { for: 'title' }, 'Title'), title), el('div', {}, el('label', { for: 'notes' }, 'Notes (optional)'), notes)),
-    el('div', {}, el('button', { class: 'btn', type: 'submit' }, 'Send request')));
+  banner,
+  el('div', { class: 'panel' }, el('h3', {}, 'Where'), el('p', { class: 'muted small' }, 'Tap the field, or a section of it.'), pickerHost, hint),
+  el('div', { class: 'panel stack' }, el('h3', {}, 'When'),
+    el('div', { class: 'grid2' }, el('div', {}, el('label', { for: 'date' }, 'First date'), date), el('div', {}, el('label', { for: 'org' }, 'Asking for'), org)),
+    el('div', { class: 'grid2' }, el('div', {}, el('label', { for: 'start' }, 'Starts'), start), el('div', {}, el('label', { for: 'end' }, 'Ends'), end)),
+    el('label', { for: 'rep', class: 'row', style: 'font-weight:500' }, rep, 'Repeat every week'), repeatBox),
+  el('div', { class: 'panel stack' }, el('h3', {}, 'What for'),
+    el('div', {}, el('label', { for: 'title' }, 'Title'), title), el('div', {}, el('label', { for: 'notes' }, 'Notes (optional)'), notes)),
+  el('div', {}, el('button', { class: 'btn', type: 'submit' }, 'Send request')));
   return el('div', {}, el('div', { class: 'head' }, el('h2', {}, 'Request time')), form);
 }
 
-/* Setup (tenant admin) */
+/* ---------- Groups: insurance, permits, trusted groups ---------- */
+async function groupsView() {
+  const [{ organizations: status }, { organizations }] = await Promise.all([api('/compliance'), api('/organizations')]);
+  state.compliance = status;
+  const label = { ok: 'Insurance on file', expiring: 'Expiring soon', expired: 'Expired', missing: 'No insurance' };
+  const wrap = el('div', { class: 'stack' }, el('div', { class: 'head' }, el('h2', {}, 'Groups and insurance')));
+  if (isStaff()) wrap.append(el('p', { class: 'muted' }, 'Keep each group\'s insurance certificate and permits current. Turn on Trusted to approve a group\'s requests automatically when nothing conflicts.'));
+  for (const o of status) {
+    const info = organizations.find((x) => x.id === o.id);
+    const host = el('div', {});
+    const load = async () => {
+      const { documents } = await api(`/organizations/${o.id}/documents`);
+      const kind = el('select', { 'aria-label': 'Kind' }, ['insurance', 'permit', 'waiver', 'other'].map((k) => el('option', { value: k }, cap(k))));
+      const exp = el('input', { type: 'date', 'aria-label': 'Expires on' });
+      const note = el('input', { type: 'text', placeholder: 'Policy number or note', 'aria-label': 'Note' });
+      host.replaceChildren(
+        documents.length ? el('ul', { class: 'plain' }, documents.map((d) => el('li', { class: 'row between' },
+          el('span', {}, `${cap(d.kind)}${d.expiresOn ? `, expires ${d.expiresOn}` : ', no expiry'}${d.note ? `, ${d.note}` : ''}`),
+          canManageOrg(o.id) ? el('button', { class: 'btn danger small', onclick: () => guard(async () => { await api(`/documents/${d.id}`, { method: 'DELETE' }); await load(); }) }, 'Remove') : null)))
+          : el('p', { class: 'muted small' }, 'Nothing on file.'),
+        canManageOrg(o.id) ? el('div', { class: 'row' }, kind, exp, note, el('button', { class: 'btn alt small', onclick: () => guard(async () => {
+          await api(`/organizations/${o.id}/documents`, { method: 'POST', body: { kind: kind.value, expiresOn: exp.value || null, note: note.value } }); toast('Saved'); await load();
+          const { organizations: s2 } = await api('/compliance'); state.compliance = s2;
+        }) }, 'Add')) : null);
+    };
+    const body = el('div', {});
+    wrap.append(el('article', { class: 'panel card' }, el('div', { class: 'card-head' }, el('h3', {}, o.name),
+      el('div', { class: 'row' }, el('span', { class: 'badge ' + (o.status === 'ok' ? 'confirmed' : o.status === 'expiring' ? 'pending' : 'conflict') }, label[o.status]),
+        isAdmin() && info ? el('label', { class: 'row inline-check' }, el('input', { type: 'checkbox', checked: info.autoApprove, onchange: (e) => guard(async () => {
+          await api(`/organizations/${o.id}`, { method: 'PATCH', body: { autoApprove: e.target.checked } }); toast(e.target.checked ? 'Trusted: auto-approve on' : 'Auto-approve off');
+        }) }), 'Trusted') : null)), body));
+    body.append(host); load();
+  }
+  if (!status.length) wrap.append(el('div', { class: 'panel empty-big' }, el('p', { class: 'muted' }, 'No groups yet.')));
+  return wrap;
+}
+
+/* ---------- Closures ---------- */
+async function closuresView() {
+  const [{ closures }, { facilities }] = await Promise.all([api('/closures'), api('/facilities')]);
+  const reason = el('input', { type: 'text', maxlength: 200, placeholder: 'Rain, aeration, tournament', 'aria-label': 'Reason' });
+  const d1 = el('input', { type: 'date', 'aria-label': 'First day' });
+  const d2 = el('input', { type: 'date', 'aria-label': 'Last day (optional)' });
+  const t1 = el('input', { type: 'time', 'aria-label': 'From time' });
+  const t2 = el('input', { type: 'time', 'aria-label': 'Until time' });
+  const target = el('select', { 'aria-label': 'What to close' }, el('option', { value: 'all' }, 'Everything'),
+    facilities.map((f) => el('option', { value: `f:${f.id}` }, `All of ${f.name}`)),
+    state.spaces.map((s) => el('option', { value: `s:${s.id}` }, `${s.parent_id ? 'Section: ' : ''}${s.name}`)));
+  const result = el('p', { class: 'muted', role: 'status' });
+  const body = (preview) => { const b = { reason: reason.value, startDate: d1.value, endDate: d2.value || d1.value, preview };
+    if (t1.value) b.startTime = t1.value; if (t2.value) b.endTime = t2.value;
+    if (target.value === 'all') b.all = true; else if (target.value.startsWith('f:')) b.facilityId = target.value.slice(2); else b.spaceId = target.value.slice(2); return b; };
+  const closeBtn = el('button', { class: 'btn danger', type: 'button', onclick: () => guard(async () => {
+    const p = await api('/closures', { method: 'POST', body: body(true) });
+    if (p.bookings && !confirm(`${p.bookings} booking${p.bookings === 1 ? '' : 's'} from ${p.requests} request${p.requests === 1 ? '' : 's'} will be cancelled and the people told. Close anyway?`)) return;
+    const r = await api('/closures', { method: 'POST', body: body(false) });
+    toast(r.cancelledBookings ? `Closed. ${r.cancelledBookings} booking${r.cancelledBookings === 1 ? '' : 's'} cancelled` : 'Closed'); render();
+  }) }, 'Close it');
+  return el('div', { class: 'stack' }, el('div', { class: 'head' }, el('h2', {}, 'Closures')),
+    section('Close a field', el('p', { class: 'muted small' }, 'Use for rain, aeration or a tournament. Anything booked in that time is cancelled and each person gets an email. Leave the times empty to close all day.'),
+      el('div', { class: 'grid2' }, field('Reason', reason), field('What', target)),
+      el('div', { class: 'grid2' }, field('First day', d1), field('Last day', d2, 'Leave empty for one day')),
+      el('div', { class: 'grid2' }, field('From (optional)', t1), field('Until (optional)', t2)), result, closeBtn),
+    section('Upcoming closures', closures.length ? el('ul', { class: 'plain' }, closures.map((c) => el('li', { class: 'row between' },
+      el('span', {}, `${c.space}: ${c.reason}, ${dayLabel(c.startsAt)} ${hhmm(c.startsAt)} to ${ymd(c.startsAt) === ymd(new Date(new Date(c.endsAt) - 1)) ? hhmm(c.endsAt) : `${dayLabel(new Date(new Date(c.endsAt) - 1))} ${hhmm(c.endsAt)}`}`),
+      el('button', { class: 'btn alt small', onclick: () => guard(async () => { if (!confirm('Reopen this? Cancelled bookings stay cancelled.')) return; await api(`/closures/${c.id}`, { method: 'DELETE' }); render(); }) }, 'Reopen'))))
+      : el('p', { class: 'muted' }, 'None.')));
+}
+
+/* ---------- Reports ---------- */
+async function reportsView() {
+  const today = ymd(new Date());
+  if (!state.report) state.report = { from: addDays(today, -90), to: today };
+  const from = el('input', { type: 'date', value: state.report.from, 'aria-label': 'From' });
+  const to = el('input', { type: 'date', value: state.report.to, 'aria-label': 'To' });
+  const data = await api(`/reports/usage?from=${state.report.from}&to=${state.report.to}`);
+  const table = (rows, label) => rows.length ? el('table', { class: 'tbl' }, el('thead', {}, el('tr', {}, el('th', {}, label), el('th', { class: 'num' }, 'Bookings'), el('th', { class: 'num' }, 'Hours'))),
+    el('tbody', {}, rows.map((r) => el('tr', {}, el('td', {}, r.name), el('td', { class: 'num' }, String(r.bookings)), el('td', { class: 'num' }, String(r.hours)))))) : el('p', { class: 'muted' }, 'No bookings in this range.');
+  return el('div', { class: 'stack' }, el('div', { class: 'head' }, el('h2', {}, 'Usage')),
+    el('div', { class: 'panel row' }, el('label', {}, 'From'), from, el('label', {}, 'To'), to,
+      el('button', { class: 'btn small', onclick: () => { state.report = { from: from.value, to: to.value }; render(); } }, 'Show')),
+    el('div', { class: 'stats' }, [['Hours booked', data.totalHours], ['Waiting', data.pending], ['Cancelled dates', data.cancelled], ['Conflicts', data.conflicts]].map(([l, v]) =>
+      el('div', { class: 'stat panel' }, el('b', {}, String(v)), el('span', { class: 'muted small' }, l)))),
+    section('By field', table(data.bySpace, 'Field')), section('By group', table(data.byOrg, 'Group')));
+}
+
+/* ---------- Add to your calendar ---------- */
+async function calendarView() {
+  const { feeds } = await api('/calendar-feeds');
+  const mine = state.orgs.filter((o) => isStaff() || myOrgIds().includes(o.id));
+  const which = el('select', { 'aria-label': 'Which bookings' }, el('option', { value: '' }, 'The whole schedule'), mine.map((o) => el('option', { value: o.id }, o.name)));
+  const out = el('div', {});
+  const copy = (txt) => navigator.clipboard?.writeText(txt).then(() => toast('Copied'), () => toast('Select and copy the address', true));
+  return el('div', { class: 'stack' }, el('div', { class: 'head' }, el('h2', {}, 'Add to your calendar')),
+    section('Subscribe in Google, Apple or Outlook', el('p', { class: 'muted' }, 'You get a private address. Add it as a calendar subscription and approved bookings show up and stay up to date. Anyone with the address can see the bookings, so do not share it.'),
+      field('What to include', which),
+      el('button', { class: 'btn', onclick: () => guard(async () => {
+        const r = await api('/calendar-feeds', { method: 'POST', body: { organizationId: which.value || null, label: which.selectedOptions[0].textContent } });
+        out.replaceChildren(el('div', { class: 'notice stack' }, el('p', {}, el('b', {}, 'Copy this now. It is shown only once.')),
+          el('input', { type: 'text', readonly: true, value: r.url, 'aria-label': 'Calendar address', onfocus: (e) => e.target.select() }),
+          el('div', { class: 'actions' }, el('button', { class: 'btn small', onclick: () => copy(r.url) }, 'Copy address'),
+            el('a', { class: 'btn alt small', href: r.webcal }, 'Open in calendar app')),
+          el('p', { class: 'muted small' }, 'Google Calendar: Other calendars, From URL, paste the address. Apple and Outlook: choose Add subscription.')));
+      }) }, 'Create my calendar address'), out),
+    feeds.length ? section('Your addresses', el('ul', { class: 'plain' }, feeds.map((f) => el('li', { class: 'row between' }, el('span', {}, f.label),
+      el('button', { class: 'btn danger small', onclick: () => guard(async () => { if (!confirm('Turn this address off? Calendars using it stop updating.')) return; await api(`/calendar-feeds/${f.id}`, { method: 'DELETE' }); render(); }) }, 'Turn off'))))) : null);
+}
+
+/* ---------- Setup (tenant admin) ---------- */
+function parseTable(text) { // CSV or tab separated (paste from a spreadsheet); first row is the header
+  const lines = text.replace(/\r/g, '').split('\n').filter((l) => l.trim());
+  if (!lines.length) return [];
+  const delim = lines[0].includes('\t') ? '\t' : ',';
+  const split = (line) => { const out = []; let cur = '', q = false;
+    for (let i = 0; i < line.length; i++) { const ch = line[i];
+      if (q) { if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; }
+      else if (ch === '"') q = true; else if (ch === delim) { out.push(cur); cur = ''; } else cur += ch; }
+    out.push(cur); return out.map((x) => x.trim()); };
+  const head = split(lines[0]).map((h) => h.toLowerCase());
+  return lines.slice(1).map((l) => Object.fromEntries(split(l).map((v, i) => [head[i], v])));
+}
+const IMPORTS = {
+  spaces: { label: 'Fields and sections', cols: 'facility, field, section, lights', example: 'facility,field,section,lights\nNorth Complex,Pitch A,North half,yes\nNorth Complex,Pitch A,South half,yes' },
+  organizations: { label: 'Clubs, schools and teams', cols: 'name, kind', example: 'name,kind\nU10 Boys,club\nSpring-Ford HS,school' },
+  bookings: { label: 'Existing bookings', cols: 'organization, space, title, date, start, end', example: 'organization,space,title,date,start,end\nU10 Boys,North half,Practice,2027-09-07,17:00,18:30' },
+};
+function importPanel() {
+  const kind = el('select', { 'aria-label': 'What to import', onchange: () => { box.placeholder = IMPORTS[kind.value].example; info.textContent = `Columns: ${IMPORTS[kind.value].cols}`; } },
+    Object.entries(IMPORTS).map(([k, v]) => el('option', { value: k }, v.label)));
+  const info = el('p', { class: 'muted small' }, `Columns: ${IMPORTS.spaces.cols}`);
+  const box = el('textarea', { class: 'mono', rows: '6', placeholder: IMPORTS.spaces.example, 'aria-label': 'Paste rows here' });
+  const file = el('input', { type: 'file', accept: '.csv,.tsv,.txt', 'aria-label': 'Choose a file', onchange: async (e) => { const f = e.target.files[0]; if (f) box.value = await f.text(); } });
+  const out = el('div', { role: 'status' });
+  const run = (preview) => guard(async () => {
+    const rows = parseTable(box.value);
+    if (!rows.length) throw new Error('Paste a header row and at least one data row');
+    const r = await api(`/import/${kind.value}`, { method: 'POST', body: { rows, preview } });
+    out.replaceChildren(el('div', { class: 'notice' },
+      el('p', {}, el('b', {}, preview ? 'This is what would happen: ' : 'Done: '), Object.entries(r.created).map(([k, v]) => `${v} ${k}`).join(', ')),
+      r.errors.length ? el('ul', {}, r.errors.slice(0, 20).map((x) => el('li', {}, `Row ${x.row}: ${x.message}`))) : null,
+      r.errors.length > 20 ? el('p', { class: 'muted small' }, `and ${r.errors.length - 20} more`) : null));
+    if (!preview) { toast('Imported'); await loadData(); }
+  });
+  return section('Import from a spreadsheet', el('p', { class: 'muted small' }, 'Copy rows from Excel or Google Sheets and paste them here, or choose a CSV file. Check first, then import. Up to 500 rows at a time.'),
+    field('What are you importing', kind), info, box, file,
+    el('div', { class: 'actions' }, el('button', { class: 'btn alt', onclick: () => run(true) }, 'Check first'), el('button', { class: 'btn', onclick: () => run(false) }, 'Import')), out);
+}
+
+async function rulesPanel() {
+  const [s, { hours }] = await Promise.all([api('/settings'), api('/hours')]);
+  const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
+  const zone = el('input', { type: 'text', list: 'zones', value: s.timezone, 'aria-label': 'Time zone' });
+  const lat = el('input', { type: 'text', inputmode: 'decimal', value: s.latitude ?? '', placeholder: '40.13', 'aria-label': 'Latitude' });
+  const lon = el('input', { type: 'text', inputmode: 'decimal', value: s.longitude ?? '', placeholder: '-75.51', 'aria-label': 'Longitude' });
+  const level = (v, opts) => el('select', {}, opts.map(([k, l]) => el('option', { value: k, selected: k === v }, l)));
+  const dl = level(s.daylightRule, [['off', 'Do not check'], ['warn', 'Flag for the approver'], ['block', 'Do not allow']]);
+  const ins = level(s.insuranceRule, [['off', 'Do not check'], ['warn', 'Flag for the approver'], ['block', 'Do not allow']]);
+  const num = (v) => (v.trim() === '' ? null : Number(v));
+  const save = el('button', { class: 'btn', onclick: () => guard(async () => {
+    await api('/settings', { method: 'PATCH', body: { timezone: zone.value, latitude: num(lat.value), longitude: num(lon.value), daylightRule: dl.value, insuranceRule: ins.value } });
+    state.tenant = await api('/tenant'); state.tenant.daylightRule = dl.value; toast('Saved');
+  }) }, 'Save rules');
+
+  // bookable hours
+  const hSpace = el('select', { 'aria-label': 'Applies to' }, el('option', { value: '' }, 'All spaces'), state.spaces.map((x) => el('option', { value: x.id }, x.name)));
+  const hDays = new Set([0, 1, 2, 3, 4, 5, 6]);
+  const dayChips = el('div', { class: 'chips' }, [1, 2, 3, 4, 5, 6, 0].map((n) => el('button', { type: 'button', class: 'chip', 'aria-pressed': 'true', onclick: (e) => {
+    hDays.has(n) ? hDays.delete(n) : hDays.add(n); e.currentTarget.setAttribute('aria-pressed', String(hDays.has(n))); } }, WEEKDAYS[n])));
+  const opens = el('input', { type: 'time', value: '08:00', 'aria-label': 'Opens' }), closes = el('input', { type: 'time', value: '21:00', 'aria-label': 'Closes' });
+  const enf = level('block', [['block', 'Do not allow outside these hours'], ['warn', 'Flag for the approver']]);
+  const hNote = el('input', { type: 'text', placeholder: 'Note, for example neighbors', 'aria-label': 'Note' });
+  const hs = (x) => `${x.space || 'All spaces'}: ${x.weekdays.length === 7 ? 'daily' : x.weekdays.map((n) => WEEKDAYS[n]).join(', ')} ${x.opens} to ${x.closes}, ${x.enforcement === 'block' ? 'enforced' : 'flagged'}${x.note ? `, ${x.note}` : ''}`;
+  return el('div', { class: 'stack' },
+    section('Rules', el('p', { class: 'muted small' }, 'Rules can flag a request for the approver or stop it from being sent.'),
+      el('datalist', { id: 'zones' }, zones.map((z) => el('option', { value: z }))),
+      field('Time zone', zone),
+      el('div', { class: 'grid2' }, field('Latitude', lat, 'Needed for sunset times'), field('Longitude', lon)),
+      field('Fields without lights: time must end before sunset', dl), field('Group has no valid insurance', ins), save),
+    section('Bookable hours', hours.length ? el('ul', { class: 'plain' }, hours.map((x) => el('li', { class: 'row between' }, el('span', {}, hs(x)),
+      el('button', { class: 'btn danger small', onclick: () => guard(async () => { await api(`/hours/${x.id}`, { method: 'DELETE' }); render(); }) }, 'Remove')))) : el('p', { class: 'muted small' }, 'No limits. Add hours to stop late-night bookings.'),
+      field('Applies to', hSpace), field('Days', dayChips), el('div', { class: 'grid2' }, field('Opens', opens), field('Closes', closes)), field('If outside these hours', enf), hNote,
+      el('button', { class: 'btn alt', onclick: () => guard(async () => {
+        if (!hDays.size) throw new Error('Pick at least one day');
+        await api('/hours', { method: 'POST', body: { spaceId: hSpace.value || null, weekdays: [...hDays], opens: opens.value, closes: closes.value, enforcement: enf.value, note: hNote.value } }); toast('Added'); render();
+      }) }, 'Add hours')));
+}
+
 async function setupView() {
   const [{ facilities }, { organizations }] = await Promise.all([api('/facilities'), api('/organizations')]);
   state.facilities = facilities;
@@ -241,33 +627,41 @@ async function setupView() {
   const spName = el('input', { type: 'text', placeholder: 'Upper field', 'aria-label': 'Space name' });
   const spLights = el('input', { type: 'checkbox', id: 'lights' });
   const orgName = el('input', { type: 'text', placeholder: 'U12 Girls', 'aria-label': 'Organization name' });
-  const orgKind = el('select', { 'aria-label': 'Kind' }, ['club', 'school', 'league', 'other'].map((k) => el('option', { value: k }, k[0].toUpperCase() + k.slice(1))));
+  const orgKind = el('select', { 'aria-label': 'Kind' }, ['club', 'school', 'league', 'other'].map((k) => el('option', { value: k }, cap(k))));
   const mOrg = el('select', { 'aria-label': 'Organization' }, organizations.map((o) => el('option', { value: o.id }, o.name)));
   const mName = el('input', { type: 'text', placeholder: 'Full name', 'aria-label': 'Full name' });
   const mEmail = el('input', { type: 'email', placeholder: 'email@example.com', 'aria-label': 'Email' });
   const mRole = el('select', { 'aria-label': 'Role' }, el('option', { value: 'booker' }, 'Can request time'), el('option', { value: 'org_admin' }, 'Manages the organization'));
+  const sName = el('input', { type: 'text', placeholder: 'Full name', 'aria-label': 'Staff name' });
+  const sEmail = el('input', { type: 'email', placeholder: 'email@example.com', 'aria-label': 'Staff email' });
+  const sRole = el('select', { 'aria-label': 'Staff role' }, el('option', { value: 'approver' }, 'Approver'), el('option', { value: 'tenant_admin' }, 'Admin'));
 
   return el('div', { class: 'stack' }, el('div', { class: 'head' }, el('h2', {}, 'Setup')),
-    el('section', { class: 'panel stack' }, el('h3', {}, 'Fields and sections'),
+    section('Fields and sections',
       state.spaces.length ? pitchPicker(state.spaces, {}) : el('p', { class: 'muted' }, 'No fields yet. Add a facility, then its fields.'),
       el('div', { class: 'row' }, facName, el('button', { class: 'btn alt', onclick: () => facName.value && post('/facilities', { name: facName.value }, 'Facility added') }, 'Add facility')),
       facilities.length ? el('div', { class: 'stack' },
         el('div', { class: 'grid2' }, spFac, spParent), spName,
         el('label', { for: 'lights', class: 'row', style: 'font-weight:500' }, spLights, 'Has lights'),
         el('button', { class: 'btn', onclick: () => spName.value && post('/spaces', { facilityId: spFac.value, parentId: spParent.value || null, name: spName.value, hasLights: spLights.checked }, 'Added') }, 'Add field or section')) : null),
-    el('section', { class: 'panel stack' }, el('h3', {}, 'Clubs, schools and teams'),
-      organizations.length ? el('ul', {}, organizations.map((o) => el('li', {}, `${o.name} (${o.kind})`))) : el('p', { class: 'muted' }, 'None yet.'),
+    section('Clubs, schools and teams',
+      organizations.length ? el('ul', {}, organizations.map((o) => el('li', {}, `${o.name} (${o.kind})${o.autoApprove ? ', trusted' : ''}`))) : el('p', { class: 'muted' }, 'None yet.'),
       el('div', { class: 'row' }, orgName, orgKind, el('button', { class: 'btn alt', onclick: () => orgName.value && post('/organizations', { name: orgName.value, kind: orgKind.value }, 'Organization added') }, 'Add organization')),
       organizations.length ? el('div', { class: 'stack' }, el('h3', {}, 'Invite someone'),
         el('p', { class: 'muted small' }, 'They get an email with a sign-in link.'),
         el('div', { class: 'grid2' }, mOrg, mRole), el('div', { class: 'grid2' }, mName, mEmail),
-        el('button', { class: 'btn', onclick: () => post(`/organizations/${mOrg.value}/members`, { fullName: mName.value, email: mEmail.value, role: mRole.value }, 'Invitation sent') }, 'Send invitation')) : null));
+        el('button', { class: 'btn', onclick: () => post(`/organizations/${mOrg.value}/members`, { fullName: mName.value, email: mEmail.value, role: mRole.value }, 'Invitation sent') }, 'Send invitation')) : null),
+    section('Approvers', el('p', { class: 'muted small' }, 'Approvers review requests. Admins can also change setup.'),
+      el('div', { class: 'grid2' }, sName, sEmail), sRole,
+      el('button', { class: 'btn alt', onclick: () => post('/staff', { fullName: sName.value, email: sEmail.value, role: sRole.value }, 'Invitation sent') }, 'Add')),
+    await rulesPanel(), importPanel());
 }
 
 /* ---------- boot ---------- */
 async function loadData() {
   const [{ spaces }, { facilities }, { organizations }] = await Promise.all([api('/spaces'), api('/facilities'), api('/organizations')]);
   state.spaces = spaces; state.facilities = facilities; state.orgs = organizations;
+  try { state.compliance = (await api('/compliance')).organizations; } catch { state.compliance = []; }
 }
 async function render() {
   if (!state.me) {
@@ -281,7 +675,7 @@ async function render() {
     state.tenant = await api('/tenant');
     await loadData();
   }
-  const views = { schedule: scheduleView, requests: requestsView, new: async () => newRequestView(), setup: setupView };
+  const views = { schedule: scheduleView, requests: requestsView, new: newRequestView, groups: groupsView, closures: closuresView, reports: reportsView, calendar: calendarView, setup: setupView };
   let content;
   try { content = await views[state.view](); } catch (e) { content = el('p', { role: 'alert' }, e.message); }
   $app.replaceChildren(shell(content));
