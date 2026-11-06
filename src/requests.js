@@ -231,6 +231,20 @@ requestsRouter.get('/requests', async (req, res, next) => {
   } catch (err) { if (badUuid(err)) return res.status(400).json({ error: 'Invalid filter' }); next(err); }
 });
 
+// How many requests are waiting: for staff, everything in their sites; for everyone else, their own groups'. Drives the badge on Requests.
+requestsRouter.get('/requests/pending-count', async (req, res, next) => {
+  try {
+    const staff = isStaff(req), scope = staff ? staffScope(req) : null;
+    const mine = req.roles.map((r) => r.organizationId).filter(Boolean);
+    const n = await withTenant(req.tenantId, async (c) => (await c.query(
+      `select count(*)::int n from request r where r.status = 'pending'
+          and ($1 or r.organization_id = any($2::uuid[]))
+          and ($3::uuid[] is null or exists (select 1 from booking_date b join space s on s.id = b.space_id where b.request_id = r.id and s.facility_id = any($3)))`,
+      [staff, mine, scope])).rows[0].n);
+    res.json({ count: n });
+  } catch (err) { next(err); }
+});
+
 // Is any date of this request inside the facilities this staff member covers? (null scope = everything)
 async function inScope(c, scope, requestId) {
   if (!scope) return true;

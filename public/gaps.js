@@ -193,7 +193,7 @@ export async function paymentsPanel() {
     : !s.ready ? el('div', { class: 'stack' }, el('p', {}, 'Stripe needs a few more details before you can take payments.'), connect('Finish Stripe setup'))
     : el('div', { class: 'okbox' }, el('p', {}, `Card payments are on. CanWeUseIt keeps ${s.platformFeePercent}% of each payment.`));
   return section('Payments', line,
-    field('Refundable deposit on every approved request (dollars, 0 for none)', el('div', { class: 'row' }, dep, el('button', { class: 'btn alt small', onclick: () => guard(async () => {
+    field('Refundable deposit on every approved request (0 for none)', el('div', { class: 'row' }, el('div', { class: 'affix' }, el('span', {}, '$'), dep), el('button', { class: 'btn alt small', onclick: () => guard(async () => {
       await api('/settings', { method: 'PATCH', body: { depositCents: Math.round(Number(dep.value || 0) * 100) } }); toast('Deposit saved'); }) }, 'Save')),
     'A deposit invoice is created when a request is approved. Refund it from Fees when the season ends.'));
 }

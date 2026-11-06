@@ -15,3 +15,4 @@ else {
       el('b', {}, `${f(e.startsAt, { hour: 'numeric', minute: '2-digit' })} to ${f(e.endsAt, { hour: 'numeric', minute: '2-digit' })}`),
       `${e.space}, ${e.facility}`, el('br'), `${e.organization}: ${e.title}${e.label ? ` (${e.label})` : ''}`))]) : [el('p', { class: 'muted' }, 'Nothing is scheduled yet.')]));
 }
+w.append(el('p', { class: 'powered' }, 'Powered by ', Object.assign(document.createElement('a'), { href: '/', textContent: 'CanWeUseIt' })));

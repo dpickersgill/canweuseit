@@ -279,4 +279,12 @@ test('field outlines for the map, legal pages and security headers', async () =>
   assert.equal(embed.headers.get('x-frame-options'), null);
   assert.equal((await fetch(`${base}/vendor/leaflet/leaflet.css`)).status, 200);
   assert.equal((await fetch(`${base}/signup`)).status, 200);
+  const fav = await fetch(`${base}/favicon.ico`, { redirect: 'manual' });
+  assert.equal(fav.status, 301); assert.equal(fav.headers.get('location'), '/favicon.svg');
+  assert.equal((await fetch(`${base}/favicon.svg`)).status, 200);
+  // the waiting count behind the Requests badge: staff see all, a group sees its own
+  const pend = async (uid) => (await json('GET', '/requests/pending-count', uid)).count;
+  const before = await pend(admin), mine = await pend(coach2);
+  await call('POST', '/requests', coach2, { organizationId: org2, spaceId: lit, title: 'Count me', weekly: weekly('2029-02-06', '18:00', '19:00') });
+  assert.equal(await pend(admin), before + 1); assert.equal(await pend(coach2), mine + 1);
 });

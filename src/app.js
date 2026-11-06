@@ -53,6 +53,8 @@ export function buildApp() {
   app.use(express.static(new URL('../public', import.meta.url).pathname, { maxAge: '5m', index: 'index.html' }));
   app.use(express.urlencoded({ extended: false, limit: '10kb' }));
 
+  app.get('/favicon.ico', (req, res) => res.redirect(301, '/favicon.svg'));
+
   app.get('/health', async (req, res) => {
     try { await query('select 1'); res.json({ ok: true }); }
     catch { res.status(503).json({ ok: false }); }
